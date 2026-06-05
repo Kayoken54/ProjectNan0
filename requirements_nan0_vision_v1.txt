@@ -1,0 +1,9 @@
+opencv-python
+numpy
+mss
+Pillow
+
+# optional later
+ultralytics
+pytesseract
+paddleocr

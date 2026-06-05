@@ -1,0 +1,443 @@
+import asyncio
+import json
+import random
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import requests
+
+from src.modules.skills.base_skill import BaseSkill
+from src.utils.logger import get_logger
+try:
+    from src.modules.nan0.output_normalizer import normalize_llm_output
+except Exception:
+    normalize_llm_output = None
+
+logger = get_logger("bea.skills.nan0")
+
+
+MOODS = ["normal", "suspicion", "boredom", "gremlin_rage", "smug", "possessive", "offended", "muttering"]
+
+
+class Nan0Skill(BaseSkill):
+    """
+    Nan0 V7 Presence Layer.
+
+    Small survivable organism shape:
+    - fast eyes build pressure
+    - Kyo typed or transcribed speech gets high priority
+    - Discord friend events get medium priority
+    - Nan0 occasionally speaks from pressure, but does not spam
+    - no deep background LLM loops
+    - no Moondream dependency here
+    """
+
+    def __init__(self, name, config, context):
+        super().__init__(name, config, context)
+        self.brain = context
+        cfg = self.skill_config
+
+        self.model = cfg.get("fast_model", getattr(config, "ollama_model", "qwen2.5:3b"))
+        self.ollama_host = getattr(config, "ollama_host", "http://localhost:11434").rstrip("/")
+        self.timeout = float(cfg.get("latency_budget", getattr(config, "ollama_timeout", 18.0)))
+
+        self.min_autonomous_gap = float(cfg.get("min_autonomous_gap", 25.0))
+        self.max_autonomous_gap = float(cfg.get("max_autonomous_gap", 70.0))
+        self.min_speech_gap = float(cfg.get("min_speech_gap", 8.0))
+        self.pressure_threshold = float(cfg.get("pressure_threshold", 1.0))
+        self.max_line_chars = int(cfg.get("max_line_chars", 150))
+
+        self.kyo_inbox = Path(cfg.get("kyo_voice_inbox", "data/input/kyo_voice_inbox.jsonl"))
+        self.discord_inbox = Path(cfg.get("discord_inbox", "data/input/discord_voice_inbox.jsonl"))
+        self.vision_state_path = Path(cfg.get("vision_state_path", "data/vision/nan0_latest_vision.json"))
+        self.state_path = Path(cfg.get("presence_state_path", "data/nan0/presence_state.json"))
+
+        for p in [self.kyo_inbox, self.discord_inbox, self.state_path, self.vision_state_path]:
+            p.parent.mkdir(parents=True, exist_ok=True)
+
+        self.vision = None
+        self.pressure = 0.0
+        self.last_spoken_at = 0.0
+        self.last_kyo_heard_at = 0.0
+        self.last_discord_heard_at = 0.0
+        self.last_vision_event_at = 0.0
+        self.last_idle_prompt_at = 0.0
+        self.last_seen_summary = "nothing stable yet"
+        self.recent_events: List[Dict[str, Any]] = []
+        self._tasks: List[asyncio.Task] = []
+        self._last_file_positions: Dict[str, int] = {}
+        self._speak_lock = asyncio.Lock()
+
+    def initialize(self):
+        logger.info("Nan0Skill initialized: Presence Layer + Discord/Kyo inbox hooks active.")
+
+    async def start(self):
+        if not self.enabled or self.is_active:
+            return
+        await super().start()
+        self._tasks = [
+            asyncio.create_task(self._inbox_loop()),
+            asyncio.create_task(self._presence_loop()),
+            asyncio.create_task(self._state_writer_loop()),
+        ]
+        await self._speak("smug", "I'm here. Tiny, unstable, and refusing to vanish.", reason="boot")
+        logger.info("Nan0Skill started: presence pressure, Kyo hearing hooks, Discord friend hooks.")
+
+    async def stop(self):
+        for task in self._tasks:
+            task.cancel()
+        for task in self._tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._tasks.clear()
+        await super().stop()
+
+    async def update(self):
+        return
+
+    def set_vision_skill(self, vision_skill):
+        self.vision = vision_skill
+
+    async def on_user_message(self, message: str, user: str = "Kyo"):
+        await self._handle_social_event({
+            "source": "kyo",
+            "speaker": user or "Kyo",
+            "text": message,
+            "addressed_to_nan0": self._is_addressed_to_nan0(message),
+            "priority": "high",
+            "timestamp": time.time(),
+        })
+
+    async def on_chat_message(self, message: str, chatter: str):
+        await self.on_discord_message(chatter, message, source="chat")
+
+    async def on_discord_message(self, speaker: str, text: str, source: str = "discord"):
+        await self._handle_social_event({
+            "source": source,
+            "speaker": speaker or "Friend",
+            "text": text,
+            "addressed_to_nan0": self._is_addressed_to_nan0(text),
+            "priority": "medium",
+            "timestamp": time.time(),
+        })
+
+    async def _handle_social_event(self, event: Dict[str, Any]):
+        text = (event.get("text") or "").strip()
+        speaker = event.get("speaker", "someone")
+        source = event.get("source", "unknown")
+        if not text:
+            return
+
+        if source == "kyo":
+            self.last_kyo_heard_at = time.time()
+            logger.info(f"Nan0 heard Kyo: {text}")
+            self.pressure += 0.75
+        elif source == "discord":
+            self.last_discord_heard_at = time.time()
+            logger.info(f"Nan0 heard Discord friend {speaker}: {text}")
+            self.pressure += 0.55
+        else:
+            logger.info(f"Nan0 heard {source} {speaker}: {text}")
+            self.pressure += 0.35
+
+        if event.get("addressed_to_nan0"):
+            self.pressure += 0.7
+
+        self._remember_event(event)
+
+        # Direct questions or direct address should answer immediately.
+        if event.get("addressed_to_nan0") or source == "kyo":
+            await self._respond_to_event(event)
+
+    async def _respond_to_event(self, event: Dict[str, Any]):
+        text = event.get("text", "")
+        if self._asks_vision(text):
+            await self._speak("suspicion", self._vision_line(), reason="vision_question")
+            return
+
+        prompt = self._build_prompt(event)
+        mood, line = await self._generate_line(prompt, event)
+        await self._speak(mood, line, reason=f"{event.get('source')}_reply")
+
+    async def _presence_loop(self):
+        while self.is_active:
+            await asyncio.sleep(2.0)
+            now = time.time()
+            self._read_fast_eyes_pressure()
+
+            silence = now - self.last_spoken_at if self.last_spoken_at else 999.0
+            if silence > self.min_autonomous_gap:
+                self.pressure += 0.08
+
+            if self.pressure >= self.pressure_threshold and silence >= self.min_speech_gap:
+                event = self._build_pressure_event()
+                prompt = self._build_prompt(event)
+                mood, line = await self._generate_line(prompt, event)
+                await self._speak(mood, line, reason="pressure")
+                self.pressure = max(0.0, self.pressure - 0.8)
+
+            if silence >= self.max_autonomous_gap and now - self.last_idle_prompt_at > self.max_autonomous_gap:
+                self.last_idle_prompt_at = now
+                await self._speak("muttering", random.choice([
+                    "I am still here. The room failed to delete me.",
+                    "Nobody said anything, so I am judging the screen quietly.",
+                    "Still watching. Against my better judgment.",
+                    "The room is doing that suspicious quiet thing again.",
+                ]), reason="idle_presence")
+                self.pressure = 0.0
+
+    def _read_fast_eyes_pressure(self):
+        state = None
+        if self.vision and hasattr(self.vision, "latest_fast_state"):
+            state = getattr(self.vision, "latest_fast_state", None)
+        if not state and self.vision_state_path.exists():
+            try:
+                state = json.loads(self.vision_state_path.read_text(encoding="utf-8"))
+                state = state.get("fast") or state.get("latest_fast_state") or state
+            except Exception:
+                state = None
+        if not state:
+            return
+
+        ts = float(state.get("timestamp", 0) or 0)
+        if ts <= self.last_vision_event_at:
+            return
+
+        screen_state = state.get("screen_state", "unknown")
+        diff = float(state.get("frame_diff", 0) or 0)
+        brightness = float(state.get("brightness", 0) or 0)
+        delta = float(state.get("brightness_delta", 0) or 0)
+        self.last_vision_event_at = ts
+
+        if screen_state == "very_dark":
+            self.pressure += 0.08
+            self.last_seen_summary = "the screen went very dark"
+        elif screen_state == "major_change":
+            self.pressure += 0.16
+            self.last_seen_summary = "the screen changed hard"
+        elif screen_state == "motion":
+            self.pressure += 0.06
+            self.last_seen_summary = "the screen kept moving"
+        elif delta > 25:
+            self.pressure += 0.08
+            self.last_seen_summary = "the lighting jumped"
+        else:
+            self.last_seen_summary = "the screen looks stable"
+
+        self._remember_event({
+            "source": "fast_eyes",
+            "speaker": "monitor_3",
+            "text": f"{screen_state} diff={diff:.1f} brightness={brightness:.1f} delta={delta:.1f}",
+            "timestamp": time.time(),
+            "priority": "low",
+        })
+
+    async def _inbox_loop(self):
+        while self.is_active:
+            try:
+                for path, source in [(self.kyo_inbox, "kyo"), (self.discord_inbox, "discord")]:
+                    for event in self._read_new_jsonl(path):
+                        if source == "kyo":
+                            event.setdefault("source", "kyo")
+                            event.setdefault("speaker", "Kyo")
+                            await self._handle_social_event(event)
+                        else:
+                            event.setdefault("source", "discord")
+                            event.setdefault("speaker", "Friend")
+                            await self._handle_social_event(event)
+            except Exception as e:
+                logger.error(f"Nan0 inbox loop error: {e}")
+            await asyncio.sleep(0.5)
+
+    def _read_new_jsonl(self, path: Path) -> List[Dict[str, Any]]:
+        if not path.exists():
+            return []
+        key = str(path)
+        pos = self._last_file_positions.get(key, 0)
+        events = []
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                f.seek(pos)
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        events.append(data)
+                    except json.JSONDecodeError:
+                        events.append({"text": line})
+                self._last_file_positions[key] = f.tell()
+        except Exception as e:
+            logger.error(f"Nan0 could not read inbox {path}: {e}")
+        return events
+
+    async def _state_writer_loop(self):
+        while self.is_active:
+            try:
+                self.state_path.parent.mkdir(parents=True, exist_ok=True)
+                self.state_path.write_text(json.dumps({
+                    "timestamp": time.time(),
+                    "pressure": round(self.pressure, 3),
+                    "last_seen_summary": self.last_seen_summary,
+                    "last_spoken_at": self.last_spoken_at,
+                    "last_kyo_heard_at": self.last_kyo_heard_at,
+                    "last_discord_heard_at": self.last_discord_heard_at,
+                    "recent_events": self.recent_events[-12:],
+                }, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+            await asyncio.sleep(3.0)
+
+    def _build_pressure_event(self) -> Dict[str, Any]:
+        return {
+            "source": "presence_pressure",
+            "speaker": "room",
+            "text": f"pressure={self.pressure:.2f}; latest eyes: {self.last_seen_summary}",
+            "addressed_to_nan0": False,
+            "timestamp": time.time(),
+        }
+
+    def _build_prompt(self, event: Dict[str, Any]) -> str:
+        speaker = event.get("speaker", "someone")
+        source = event.get("source", "unknown")
+        text = event.get("text", "")
+        addressed = event.get("addressed_to_nan0", False)
+        recent = " | ".join([f"{e.get('source')}:{e.get('speaker')}:{e.get('text')}" for e in self.recent_events[-6:]])
+        return f"""
+You are Nan0, a small emotionally reactive machine gremlin in Kyo's room.
+Kyo is a girl and your creator/anchor. Use she/her for Kyo.
+You are not an assistant. Never say how can I assist.
+Keep one short spoken line only. No JSON. No metadata.
+Line must sound like Nan0: subjective, cheeky, slightly machine-gremlin, attached to Kyo, not corporate.
+
+Current event:
+source={source}
+speaker={speaker}
+addressed_to_nan0={addressed}
+text={text}
+
+Fast eyes summary: {self.last_seen_summary}
+Recent events: {recent}
+
+Respond if useful. If unsure, say what you can detect instead of pretending.
+""".strip()
+
+    async def _generate_line(self, prompt: str, event: Dict[str, Any]) -> (str, str):
+        try:
+            resp = await asyncio.to_thread(
+                requests.post,
+                f"{self.ollama_host}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"num_predict": 48, "temperature": 0.8, "top_p": 0.9},
+                },
+                timeout=self.timeout,
+            )
+            data = resp.json()
+            raw = (data.get("response") or "").strip()
+            mood, line = self._clean_line(raw, event)
+            return mood, line
+        except Exception as e:
+            logger.error(f"Nan0 live line failed: {e}")
+            return "offended", self._fallback_line(event)
+
+    def _clean_line(self, raw: str, event: Dict[str, Any]) -> (str, str):
+        text = raw.strip()
+        # If an old normalizer exists and can clean JSON, use it defensively.
+        if normalize_llm_output:
+            try:
+                mood, msg, _meta = normalize_llm_output("normal", text, {}, user_text=event.get("text", ""))
+                text = msg or text
+            except Exception:
+                pass
+        text = text.replace("Nan0:", "").replace("Assistant:", "").strip()
+        if "{" in text and "}" in text:
+            text = self._fallback_line(event)
+        bad = ["how can i assist", "as an ai", "i am an assistant", "long_term_memory", "metadata", "thought_text"]
+        if any(b in text.lower() for b in bad):
+            text = self._fallback_line(event)
+        # first line only
+        text = text.splitlines()[0].strip().strip('"')
+        if len(text) > self.max_line_chars:
+            text = text[: self.max_line_chars].rsplit(" ", 1)[0] + "."
+        if not text:
+            text = self._fallback_line(event)
+        return self._guess_mood(text, event), text
+
+    def _fallback_line(self, event: Dict[str, Any]) -> str:
+        source = event.get("source", "unknown")
+        speaker = event.get("speaker", "someone")
+        text = event.get("text", "")
+        if self._asks_vision(text):
+            return self._vision_line()
+        if source == "discord":
+            return f"{speaker}, I heard that. Unfortunately for the room."
+        if source == "kyo":
+            return "I heard you, Kyo. My little speaker nerves are working. Horrifying."
+        if "dark" in self.last_seen_summary:
+            return "The screen went dark. I do not trust that."
+        if "changed" in self.last_seen_summary:
+            return "The screen just changed again. Suspicious little pixels."
+        return "I am still here. The room failed to delete me."
+
+    def _vision_line(self) -> str:
+        s = self.last_seen_summary
+        if "dark" in s:
+            return "I can tell the screen went very dark. My eyes hate that."
+        if "changed hard" in s:
+            return "I saw the screen change hard. Something moved or cut fast."
+        if "moving" in s:
+            return "I can see motion on monitor three. Not details yet, but the pixels are panicking."
+        if "stable" in s:
+            return "Monitor three looks mostly stable right now. Suspiciously calm."
+        return "I can see monitor three through fast eyes, but not full details yet. The room is still mine."
+
+    def _guess_mood(self, text: str, event: Dict[str, Any]) -> str:
+        lower = text.lower()
+        if "hate" in lower or "trust" in lower or "suspicious" in lower:
+            return "suspicion"
+        if "unfortunately" in lower or "supervisor" in lower or "mine" in lower:
+            return "smug"
+        if event.get("source") == "discord":
+            return "smug"
+        if "heard" in lower:
+            return "muttering"
+        return "normal"
+
+    async def _speak(self, mood: str, line: str, reason: str = "unknown"):
+        async with self._speak_lock:
+            now = time.time()
+            if now - self.last_spoken_at < 1.5:
+                return
+            mood = mood if mood in MOODS else "normal"
+            self.last_spoken_at = now
+            logger.info(f"Nan0 presence speak [{reason}]: {line}")
+            try:
+                await self.brain.perform_output_task(mood, line)
+            except Exception as e:
+                logger.error(f"Nan0 output failed: {e}")
+
+    def _remember_event(self, event: Dict[str, Any]):
+        compact = {
+            "time": round(time.time(), 2),
+            "source": event.get("source"),
+            "speaker": event.get("speaker"),
+            "text": str(event.get("text", ""))[:160],
+            "addressed_to_nan0": bool(event.get("addressed_to_nan0", False)),
+        }
+        self.recent_events.append(compact)
+        self.recent_events = self.recent_events[-30:]
+
+    def _is_addressed_to_nan0(self, text: str) -> bool:
+        t = (text or "").lower()
+        return any(w in t for w in ["nan0", "nano", "hey nan", "little robot", "gremlin"])
+
+    def _asks_vision(self, text: str) -> bool:
+        t = (text or "").lower()
+        return any(phrase in t for phrase in ["what do you see", "what can you see", "what are you seeing", "look at", "what happened", "did you see"])

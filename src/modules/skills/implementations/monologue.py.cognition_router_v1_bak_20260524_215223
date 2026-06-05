@@ -1,0 +1,81 @@
+from src.modules.skills.implementations.nan0_cognition_router_v1 import route_thought, thought_packet_to_event, clean_nan0_line
+"""Nan0 thought-origin monologue gate.
+
+This consumes only NEW thought packets from the vision stack.
+Silence, stable frames, and repeated vision states are not speech content.
+"""
+import json
+import re
+import time
+from pathlib import Path
+from typing import Any, Dict, List
+
+from src.modules.skills.base_skill import BaseSkill
+from src.utils.logger import get_logger
+
+logger = get_logger("bea.skills.monologue")
+
+
+class MonologueSkill(BaseSkill):
+    def initialize(self):
+        logger.info("Nan0 monologue gate V2: speech requires a fresh thought packet.")
+        cfg = self.skill_config
+        self.min_gap_seconds = float(cfg.get("min_gap_seconds", 45))
+        self.vision_state_path = Path(cfg.get("vision_state_path", "data/vision/nan0_vision_stack_state.json"))
+        self.last_speech_time = 0.0
+        self.last_thought_id = ""
+        self.recent_lines: List[str] = []
+        self.banned = [
+            "", "", "same suspicious reality", "tragically useful",
+            "assistant sludge", "real room only", "nothing dramatic", "",
+            "i have opinions", "i already judged", "become furniture"
+        ]
+
+    async def update(self):
+        if not self.enabled or self.context.is_speaking or self._execution_lock.locked():
+            return
+        if time.time() - self.last_speech_time < self.min_gap_seconds:
+            return
+        async with self._execution_lock:
+            state = self._read_state()
+            packet = state.get("thought_packet") if isinstance(state, dict) else None
+            if not packet or not state.get("new_thought") or not state.get("speech_allowed"):
+                return
+            thought_id = str(packet.get("thought_id") or state.get("thought_event_id") or "")
+            if not thought_id or thought_id == self.last_thought_id:
+                return
+            line = str(packet.get("thought_text") or state.get("thought_seed") or "").strip()
+            mood = str(packet.get("mood") or state.get("layer3_nan0_interpretation", {}).get("mood") or "muttering")
+            if not self._valid(line):
+                return
+            self.last_thought_id = thought_id
+            logger.info(f"Nan0 thought-origin monologue: {line}")
+            await self.context.perform_output_task(mood, line)
+            self._remember(line)
+            self.last_speech_time = time.time()
+
+    def _read_state(self) -> Dict[str, Any]:
+        try:
+            if not self.vision_state_path.exists():
+                return {}
+            return json.loads(self.vision_state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _valid(self, line: str) -> bool:
+        low = re.sub(r"[^a-z0-9]+", " ", (line or "").lower()).strip()
+        if len(low.split()) < 5:
+            return False
+        if any(x in low for x in self.banned):
+            return False
+        if low in self.recent_lines:
+            return False
+        return True
+
+    def _remember(self, line: str):
+        low = re.sub(r"[^a-z0-9]+", " ", (line or "").lower()).strip()
+        self.recent_lines.append(low)
+        self.recent_lines = self.recent_lines[-18:]
+
+    def on_config_reload(self):
+        self.min_gap_seconds = float(self.skill_config.get("min_gap_seconds", self.min_gap_seconds))

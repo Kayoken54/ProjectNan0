@@ -1,0 +1,169 @@
+import asyncio
+import json
+import time
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from PIL import Image, ImageChops, ImageStat
+import mss
+
+from src.modules.skills.base_skill import BaseSkill
+from src.utils.logger import get_logger
+
+logger = get_logger("bea.skills.nan0vision")
+
+
+class Nan0VisionSkill(BaseSkill):
+    """Fast-eyes-only Nan0 vision. No Moondream. No deep Ollama lane."""
+
+    def __init__(self, name, config, brain):
+        super().__init__(name, config, brain)
+        cfg = self.skill_config
+        self.monitor_index = int(cfg.get("monitor", 3))
+        self.fast_interval = float(cfg.get("fast_interval", 2.0))
+        self.fast_width = int(cfg.get("fast_width", 320))
+        self.fast_height = int(cfg.get("fast_height", 180))
+        self.motion_threshold = float(cfg.get("motion_threshold", 10.0))
+        self.major_change_threshold = float(cfg.get("major_change_threshold", 25.0))
+        self.fast_log_interval = float(cfg.get("fast_log_interval", 8.0))
+        self.output_path = Path(cfg.get("output_path", "data/vision/nan0_latest_vision.json"))
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self.running = False
+        self.task: Optional[asyncio.Task] = None
+        self.previous_fast_frame = None
+        self.previous_brightness: Optional[float] = None
+        self.previous_screen_state: Optional[str] = None
+        self.latest_fast_state: Dict[str, Any] = {}
+        self.last_fast_log_at = 0.0
+
+    def initialize(self):
+        try:
+            self._log_monitors()
+            if self.monitor_index == 0:
+                logger.warning("Nan0VisionSkill: monitor 0 is full desktop. Forcing monitor 3.")
+                self.monitor_index = 3
+            logger.info(f"Nan0VisionSkill: FAST EYES ONLY on monitor {self.monitor_index}")
+            logger.info(f"Nan0VisionSkill: no deep vision, no Moondream. fast_interval={self.fast_interval:.2f}s")
+        except Exception as e:
+            logger.error(f"Nan0VisionSkill init error: {e}")
+
+    async def start(self):
+        if self.running:
+            return
+        await super().start()
+        self.running = True
+        self.task = asyncio.create_task(self._vision_loop())
+        logger.info("Nan0VisionSkill started.")
+
+    async def stop(self):
+        self.running = False
+        if self.task:
+            self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+        await super().stop()
+
+    async def update(self):
+        return
+
+    def _log_monitors(self):
+        with mss.mss() as sct:
+            logger.info("Nan0VisionSkill: detected monitors from mss:")
+            for i, monitor in enumerate(sct.monitors):
+                logger.info(f"Monitor {i}: {monitor}")
+
+    async def _vision_loop(self):
+        while self.running:
+            start = time.time()
+            try:
+                frame = self._capture_monitor()
+                if frame is not None:
+                    state = self._analyze_fast(frame)
+                    self.latest_fast_state = state
+                    self._write_state(state)
+                    self._log_fast_if_needed(state)
+            except Exception as e:
+                logger.error(f"Nan0 fast eyes error: {e}")
+            elapsed = time.time() - start
+            await asyncio.sleep(max(0.05, self.fast_interval - elapsed))
+
+    def _capture_monitor(self):
+        try:
+            with mss.mss() as sct:
+                monitors = sct.monitors
+                if self.monitor_index >= len(monitors):
+                    logger.error(f"Monitor {self.monitor_index} does not exist. Available: 0-{len(monitors)-1}")
+                    return None
+                screenshot = sct.grab(monitors[self.monitor_index])
+                return Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+        except Exception as e:
+            logger.error(f"Nan0VisionSkill capture error: {e}")
+            return None
+
+    def _analyze_fast(self, image):
+        small = image.copy()
+        small.thumbnail((self.fast_width, self.fast_height))
+        gray = small.convert("L")
+        stat = ImageStat.Stat(gray)
+        brightness = float(stat.mean[0]) if stat.mean else 0.0
+        frame_diff = 0.0
+        if self.previous_fast_frame is not None:
+            diff = ImageChops.difference(gray, self.previous_fast_frame)
+            frame_diff = float(ImageStat.Stat(diff).mean[0])
+        brightness_delta = abs(brightness - self.previous_brightness) if self.previous_brightness is not None else 0.0
+        moving = frame_diff >= self.motion_threshold
+        major_change = frame_diff >= self.major_change_threshold
+        if brightness < 12:
+            screen_state = "very_dark"
+        elif brightness > 225:
+            screen_state = "very_bright"
+        elif major_change:
+            screen_state = "major_change"
+        elif moving:
+            screen_state = "motion"
+        else:
+            screen_state = "stable"
+        state_changed = self.previous_screen_state is not None and screen_state != self.previous_screen_state
+        self.previous_fast_frame = gray
+        self.previous_brightness = brightness
+        self.previous_screen_state = screen_state
+        return {
+            "timestamp": time.time(),
+            "monitor": self.monitor_index,
+            "screen_state": screen_state,
+            "frame_diff": round(frame_diff, 3),
+            "brightness": round(brightness, 3),
+            "brightness_delta": round(brightness_delta, 3),
+            "moving": moving,
+            "major_change": major_change,
+            "state_changed": state_changed,
+            "summary": self._summary(screen_state),
+        }
+
+    def _summary(self, screen_state: str) -> str:
+        return {
+            "very_dark": "the screen went very dark",
+            "very_bright": "the screen got very bright",
+            "major_change": "the screen changed hard",
+            "motion": "the screen kept moving",
+            "stable": "the screen looks stable",
+        }.get(screen_state, "the screen is unclear")
+
+    def _write_state(self, state):
+        try:
+            self.output_path.write_text(json.dumps({"fast": state}, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _log_fast_if_needed(self, state):
+        now = time.time()
+        if state.get("screen_state") == "stable" and now - self.last_fast_log_at < self.fast_log_interval * 3:
+            return
+        if now - self.last_fast_log_at >= self.fast_log_interval:
+            self.last_fast_log_at = now
+            logger.info(
+                "Fast Eyes: %s diff=%.2f brightness=%.1f delta=%.1f"
+                % (state.get("screen_state"), state.get("frame_diff", 0), state.get("brightness", 0), state.get("brightness_delta", 0))
+            )

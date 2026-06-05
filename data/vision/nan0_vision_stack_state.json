@@ -1,0 +1,234 @@
+{
+  "timestamp": 1780548816.7617543,
+  "monitor": 3,
+  "layer1_reflex": {
+    "timestamp": 1780548816.7617543,
+    "screen_state": "stable",
+    "state_changed": false,
+    "frame_diff": 0.001,
+    "brightness": 36.74,
+    "brightness_delta": 0.0,
+    "motion_intensity": 0.0,
+    "dark_scene": false,
+    "major_change": false,
+    "edge_density": 0.0,
+    "text_density": 0.0,
+    "ui_rect_density": 0.0,
+    "menu_open": false,
+    "combat": false,
+    "inventory_visible": false,
+    "discord_visible": false,
+    "game_ui_detected": "unknown",
+    "object_hints": [],
+    "ocr_keywords": []
+  },
+  "layer2_semantic": {
+    "activity": "high motion gameplay",
+    "tone": "stressful",
+    "likely_player_state": "active play or fight",
+    "social_context": "unknown",
+    "attention_target": "movement spike",
+    "confidence": 0.45,
+    "backend": "heuristic_v1"
+  },
+  "layer3_nan0_interpretation": {
+    "perceived_threat": "The screen gave me weak screen context. Not enough to scream. Enough to keep one suspicious eye lit.",
+    "emotional_stakes": "suspicious",
+    "ego_position": "superior_tiny_machine_observer",
+    "mood": "suspicion",
+    "thought_seed": "The screen gave me weak screen context. Not enough to scream. Enough to keep one suspicious eye lit.",
+    "thoughtworthy": false,
+    "speak_reason": "suppressed_by_thought_engine",
+    "do_not_speak_if_only_silence": true,
+    "speakability": 0.30000000000000004,
+    "suppression_reason": "speakability_below_threshold",
+    "engine_packet": {
+      "thought_id": "thought_475c643417484759bc2926742a2361f8",
+      "event_id": "vision_event_1780548816771",
+      "created_at": 1780548816.7713342,
+      "source": "vision_stack_v1",
+      "target_actor_id": "screen",
+      "thought_type": "vision_reaction",
+      "private_text": "The screen gave me weak screen context. Not enough to scream. Enough to keep one suspicious eye lit.",
+      "seed_text": "high motion gameplay",
+      "mood": "suspicion",
+      "pressure": 0.55,
+      "novelty": 0.65,
+      "speakability": 0.30000000000000004,
+      "relationship_charge": 0.25,
+      "ego_charge": 0.25,
+      "vision_charge": 0.45,
+      "memory_write_candidate": false,
+      "suppression_reason": "speakability_below_threshold",
+      "llm_latency_ms": 5313,
+      "model": "tinyllama:latest",
+      "event_context": {
+        "source": "vision_stack_v1",
+        "speaker": "screen",
+        "text": "Vision observed high motion gameplay with screen_state=stable, motion=0.0, brightness=36.74, game=unknown.",
+        "addressed_to_nan0": false,
+        "priority": "low"
+      },
+      "emotional_context": {
+        "timestamp": 1780548816.7173452,
+        "pressure": 0.523,
+        "presence_mode": "neutral_self_directed",
+        "emotional_mode": "normal",
+        "last_seen_summary": "the screen is quiet",
+        "last_fast_state": {
+          "screen_state": "stable",
+          "frame_diff": 0.033,
+          "brightness": 36.74,
+          "brightness_delta": 0.004,
+          "motion_intensity": 0.001,
+          "semantic_activity": "high motion gameplay",
+          "semantic_confidence": 0.45
+        },
+        "last_spoken_at": 1780548656.6453671,
+        "last_kyo_heard_at": 0.0,
+        "last_discord_heard_at": 0.0,
+        "recent_events": [
+          {
+            "time": 1780548784.4,
+            "source": "fast_eyes",
+            "speaker": "screen",
+            "text": "large visual change diff=88.5 brightness=173.8",
+            "addressed_to_nan0": false
+          },
+          {
+            "time": 1780548789.94,
+            "source": "fast_eyes",
+            "speaker": "screen",
+            "text": "screen went dark",
+            "addressed_to_nan0": false
+          },
+          {
+            "time": 1780548795.57,
+            "source": "fast_eyes",
+            "speaker": "screen",
+            "text": "large visual change diff=172.9 brightness=194.8",
+            "addressed_to_nan0": false
+          },
+          {
+            "time": 1780548801.09,
+            "source": "fast_eyes",
+            "speaker": "screen",
+            "text": "large visual change diff=60.5 brightness=168.3",
+            "addressed_to_nan0": false
+          },
+          {
+            "time": 1780548806.44,
+            "source": "fast_eyes",
+            "speaker": "screen",
+            "text": "large visual change diff=59.2 brightness=185.4",
+            "addressed_to_nan0": false
+          },
+          {
+            "time": 1780548811.92,
+            "source": "fast_eyes",
+            "speaker": "screen",
+            "text": "large visual change diff=156.6 brightness=36.7",
+            "addressed_to_nan0": false
+          }
+        ],
+        "recent_lines": [
+          "i am here real inputs only no fake friends in my wires"
+        ]
+      },
+      "relationship_context": {
+        "actor": {
+          "display_name": "Kyo",
+          "gender": "girl",
+          "pronouns": [
+            "she",
+            "her"
+          ],
+          "relationship": "creator_anchor",
+          "importance": 1.0,
+          "notes": [
+            "Kyo is Nan0's primary emotional anchor.",
+            "Kyo is a girl.",
+            "Kyo should never be referred to as the user."
+          ]
+        },
+        "rules": {
+          "never_call_kyo_user": true,
+          "resolve_kyo_gender": true,
+          "internal_json_stays_internal": true,
+          "thought_object_not_spoken_line": true
+        },
+        "all_actor_ids": [
+          "kyo"
+        ]
+      },
+      "memory_context": [],
+      "vision_context": {
+        "layer1_reflex": {
+          "timestamp": 1780548816.7617543,
+          "screen_state": "stable",
+          "state_changed": false,
+          "frame_diff": 0.001,
+          "brightness": 36.74,
+          "brightness_delta": 0.0,
+          "motion_intensity": 0.0,
+          "dark_scene": false,
+          "major_change": false,
+          "edge_density": 0.0,
+          "text_density": 0.0,
+          "ui_rect_density": 0.0,
+          "menu_open": false,
+          "combat": false,
+          "inventory_visible": false,
+          "discord_visible": false,
+          "game_ui_detected": "unknown",
+          "object_hints": [],
+          "ocr_keywords": []
+        },
+        "layer2_semantic": {
+          "activity": "high motion gameplay",
+          "tone": "stressful",
+          "likely_player_state": "active play or fight",
+          "social_context": "unknown",
+          "attention_target": "movement spike",
+          "confidence": 0.45,
+          "backend": "heuristic_v1"
+        },
+        "screen_state": "stable",
+        "motion_intensity": 0.0,
+        "text_density": 0.0,
+        "brightness": 36.74,
+        "brightness_delta": 0.0
+      },
+      "thought_text": "The screen gave me weak screen context. Not enough to scream. Enough to keep one suspicious eye lit.",
+      "thought_seed": "high motion gameplay",
+      "target_actor": "screen",
+      "emotional_charge": 0.45
+    },
+    "new_thought": false,
+    "speech_allowed": false,
+    "gate_reason": "no_interpretation"
+  },
+  "thought_packet": null,
+  "latest_ocr": {
+    "backend": "disabled",
+    "text": "",
+    "words": []
+  },
+  "latest_yolo": {
+    "backend": "disabled",
+    "objects": []
+  },
+  "screen_state": "stable",
+  "frame_diff": 0.001,
+  "brightness": 36.74,
+  "brightness_delta": 0.0,
+  "moving": false,
+  "major_change": false,
+  "summary": "The screen gave me weak screen context. Not enough to scream. Enough to keep one suspicious eye lit.",
+  "thought_seed": "The screen gave me weak screen context. Not enough to scream. Enough to keep one suspicious eye lit.",
+  "thought_event_id": "",
+  "thought_event_key": "",
+  "new_thought": false,
+  "speech_allowed": false,
+  "thoughtworthy": false
+}
