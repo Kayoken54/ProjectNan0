@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "opusscript": "^0.0.8",
+    "prism-media": "^1.3.5"
+  }
+}

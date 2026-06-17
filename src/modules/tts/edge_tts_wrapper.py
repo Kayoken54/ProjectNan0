@@ -47,27 +47,9 @@ class EdgeTTSWrapper(TTSInterface):
         self.nan0_voice_log = bool(getattr(config, "nan0_voice_log", self.nan0_voice_log))
 
     def _prepare_text_for_tts(self, text: str) -> str:
-        raw = text or ""
-        if not raw:
-            return ""
-
-        if self.nan0_voice_enabled and format_nan0_voice is not None:
-            try:
-                spoken = format_nan0_voice(
-                    raw,
-                    mood=None,
-                    target=None,
-                    max_chars=self.nan0_voice_max_chars,
-                    allow_pauses=self.nan0_voice_allow_pauses,
-                )
-                if self.nan0_voice_log and spoken != raw:
-                    logger.info(f"Nan0 voice formatter: raw={raw!r} spoken={spoken!r}")
-                return spoken
-            except Exception as e:
-                logger.error(f"Nan0 voice formatter failed; using raw text: {e}")
-                return raw
-
-        return raw
+        # Nan0 speech has already passed the thought-first finalizer.
+        # Do not inject prefixes, truncate again, collapse pauses, or sanitize her attitude here.
+        return (text or "").strip()
 
     def _play_audio_sync(self, device_id: int, filename: str):
         """Synchronous audio playback using OutputStream for better thread safety."""

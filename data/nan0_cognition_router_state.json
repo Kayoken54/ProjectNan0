@@ -1,13 +1,13 @@
 {
   "recent_lines": [],
-  "last_route": "social",
-  "last_seed": "social",
-  "last_at": 1780537238.9328392,
+  "last_route": "",
+  "last_seed": "",
+  "last_at": 0.0,
   "blocked_missing_thought": 0,
-  "last_model": "qwen2.5:3b",
+  "last_model": "",
   "last_used_llm": false,
   "last_line": "",
-  "last_decision": "speak",
-  "last_reason": "route_approved_no_line",
-  "last_thought_id": "thought_d0aad01ff74248679633f40eac5bbf2a"
+  "last_decision": "",
+  "last_reason": "",
+  "last_thought_id": ""
 }

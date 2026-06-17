@@ -2,53 +2,21 @@ import asyncio
 import argparse
 import os
 import sys
-import io
 import faulthandler
 from pathlib import Path
 import warnings
-
-
-def _force_utf8_stdio() -> None:
-    """
-    Windows hardening:
-    Some local TTS/model tooling may emit UTF-8 text while the Windows console
-    is still using a legacy codepage. Force stdout/stderr to UTF-8 so Kokoro
-    and other local components do not crash the boot path with charmap errors.
-    """
-    try:
-        if hasattr(sys.stdout, "buffer"):
-            sys.stdout = io.TextIOWrapper(
-                sys.stdout.buffer,
-                encoding="utf-8",
-                errors="replace",
-                line_buffering=True,
-            )
-        if hasattr(sys.stderr, "buffer"):
-            sys.stderr = io.TextIOWrapper(
-                sys.stderr.buffer,
-                encoding="utf-8",
-                errors="replace",
-                line_buffering=True,
-            )
-    except Exception:
-        pass
-
-
-_force_utf8_stdio()
-
-os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 warnings.filterwarnings(
     "ignore",
     message='Field name ".*" shadows an attribute in parent "Operation"',
     category=UserWarning,
-    module="pydantic",
+    module='pydantic',
 )
-
 faulthandler.enable()
 
 from dotenv import load_dotenv
 
+# Load .env safely. Some Windows editors save .env as UTF-16, which crashes python-dotenv.
 try:
     load_dotenv(encoding="utf-8")
 except UnicodeDecodeError:
@@ -75,12 +43,7 @@ def parse_args():
     parser.add_argument("--system-file", default=None, help="Path to system prompt file")
     parser.add_argument("--png-dir", default=None, help="Directory for avatar PNGs")
 
-    parser.add_argument(
-        "--llm-provider",
-        choices=["gemini", "glm", "openai", "groq", "ollama"],
-        default=None,
-        help="LLM Provider to use",
-    )
+    parser.add_argument("--llm-provider", choices=["gemini", "glm", "openai", "groq", "ollama"], default=None, help="LLM Provider to use")
     parser.add_argument("--ollama-model", default=None, help="Ollama model")
     parser.add_argument("--ollama-timeout", type=float, default=None, help="Ollama timeout seconds")
     parser.add_argument("--ollama-host", default=None, help="Ollama host URL")
@@ -105,7 +68,7 @@ def parse_args():
     parser.add_argument("--obs-text-source", default=None, help="OBS Source Name for Text Bubble")
 
     parser.add_argument("--tts-provider", choices=["edge", "coqui", "orpheus", "kokoro"], default=None, help="TTS Provider")
-    parser.add_argument("--tts-voice", default=None, help="TTS Voice")
+    parser.add_argument("--tts-voice", default=None, help="EdgeTTS Voice")
     parser.add_argument("--orpheus-key", default=None, help="Orpheus API Key")
     parser.add_argument("--orpheus-endpoint", default=None, help="Orpheus Endpoint")
     parser.add_argument("--orpheus-voice", default=None, help="Orpheus Voice")
@@ -113,8 +76,55 @@ def parse_args():
     parser.add_argument("--kokoro-voices", default=None, help="Kokoro Voices File")
     parser.add_argument("--device-id", type=int, default=None, help="Audio Output Device ID")
     parser.add_argument("--typing-delay", type=float, default=None, help="Typing animation delay")
-
     return parser.parse_args()
+
+
+def _apply_env_secret_fallbacks(config: BrainConfig) -> None:
+    """Fill secret config fields from environment without writing them to config.json."""
+    env_map = {
+        "gemini_key": "GEMINI_API_KEY",
+        "glm_key": "GLM_API_KEY",
+        "openai_key": "OPENAI_API_KEY",
+        "groq_key": "GROQ_API_KEY",
+        "orpheus_key": "ORPHEUS_API_KEY",
+        "orpheus_endpoint": "ORPHEUS_ENDPOINT",
+    }
+    for field_name, env_name in env_map.items():
+        current = getattr(config, field_name, None)
+        if current:
+            continue
+        value = os.getenv(env_name)
+        if value:
+            setattr(config, field_name, value)
+
+
+def _initialize_stt(config: BrainConfig):
+    """Initialize STT safely. Returns None when disabled or unavailable."""
+    provider = (getattr(config, "stt_provider", "none") or "none").strip().lower()
+    config.stt_provider = provider
+
+    if provider != "groq":
+        logger.info(f"STT disabled/provider={provider}")
+        return None
+
+    if not getattr(config, "groq_key", None):
+        config.groq_key = os.getenv("GROQ_API_KEY")
+
+    if not config.groq_key:
+        logger.warning("GROQ_API_KEY missing. STT disabled for local-first boot.")
+        logger.info("STT Provider=groq GroqKeyPresent=False STTLoaded=False")
+        return None
+
+    try:
+        from src.modules.STT.groq_stt import GroqSTT
+    except ModuleNotFoundError:
+        # Some older trees used src/STT instead of src/modules/STT.
+        from src.STT.groq_stt import GroqSTT
+
+    logger.info("Initializing Groq STT...")
+    stt = GroqSTT(config)
+    logger.info(f"STT Provider=groq GroqKeyPresent=True STTLoaded={stt is not None}")
+    return stt
 
 
 async def main():
@@ -158,18 +168,13 @@ async def main():
     for field_name, value in cli_overrides.items():
         if value is not None:
             setattr(config, field_name, value)
-            logger.info(f"CLI override: {field_name} = {value}")
+            if field_name.endswith("_key"):
+                logger.info(f"CLI override: {field_name} = [set]")
+            else:
+                logger.info(f"CLI override: {field_name} = {value}")
 
-    if config.stt_provider == "groq":
-        if not config.groq_key:
-            logger.warning("GROQ_API_KEY missing. STT disabled for local-first boot.")
-            stt = None
-        else:
-            from src.modules.STT.groq_stt import GroqSTT
-
-            stt = GroqSTT(config)
-    else:
-        stt = None
+    _apply_env_secret_fallbacks(config)
+    stt = _initialize_stt(config)
 
     if config.llm_provider == "ollama":
         llm = OllamaLLM(
@@ -204,15 +209,9 @@ async def main():
 
     if config.tts_provider == "orpheus":
         from src.modules.tts.orpheus_tts_wrapper import OrpheusTTSWrapper
-
-        tts = OrpheusTTSWrapper(
-            api_key=config.orpheus_key,
-            endpoint_url=config.orpheus_endpoint,
-            voice=config.orpheus_voice,
-        )
+        tts = OrpheusTTSWrapper(api_key=config.orpheus_key, endpoint_url=config.orpheus_endpoint, voice=config.orpheus_voice)
     elif config.tts_provider == "kokoro":
         from src.modules.tts.kokoro_tts_wrapper import KokoroTTSWrapper
-
         tts = KokoroTTSWrapper(
             model_path=config.kokoro_model,
             voices_path=config.kokoro_voices_file,
@@ -222,54 +221,28 @@ async def main():
         )
     else:
         from src.modules.tts.edge_tts_wrapper import EdgeTTSWrapper
+        tts = EdgeTTSWrapper(voice=config.tts_voice, pitch=config.tts_pitch, rate=config.tts_rate, volume=config.tts_volume)
 
-        tts = EdgeTTSWrapper(
-            voice=config.tts_voice,
-            pitch=config.tts_pitch,
-            rate=config.tts_rate,
-            volume=config.tts_volume,
-        )
-
-    obs = OBSController(
-        host=config.obs_host,
-        port=config.obs_port,
-        password=config.obs_password,
-        source_name=config.obs_avatar_source,
-    )
-
+    obs = OBSController(host=config.obs_host, port=config.obs_port, password=config.obs_password, source_name=config.obs_avatar_source)
     brain = AIVtuberBrain(config, llm, tts, stt, obs)
 
     try:
         brain.initialize()
         await brain.start_skills()
-
         if args.web:
             from src.web.server import run_server
-
             logger.info("Starting Web Interface at http://localhost:8000")
             await run_server(brain, port=8000)
         else:
             await brain.run_loop()
-
     except KeyboardInterrupt:
         logger.info("Stopping...")
-        try:
-            if brain.memory_skill and brain.memory_skill.enabled:
-                logger.info("Saving pending memories...")
-                await brain.memory_skill.save_all_pending()
-        except Exception as exc:
-            logger.warning(f"Memory save skipped during shutdown: {exc}")
-
+        if brain.memory_skill and brain.memory_skill.enabled:
+            logger.info("Saving pending memories...")
+            await brain.memory_skill.save_all_pending()
     finally:
-        try:
-            await brain.skill_manager.stop()
-        except Exception as exc:
-            logger.warning(f"Skill manager shutdown warning: {exc}")
-
-        try:
-            brain.shutdown()
-        except Exception as exc:
-            logger.warning(f"Brain shutdown warning: {exc}")
+        await brain.skill_manager.stop()
+        brain.shutdown()
 
 
 if __name__ == "__main__":

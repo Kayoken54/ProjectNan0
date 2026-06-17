@@ -71,6 +71,14 @@ class BrainConfig:
         "possessive": {"idle": "nan0_possessive.png", "talking": "nan0_possessive_talk.png"},
         "offended": {"idle": "nan0_offended.png", "talking": "nan0_offended_talk.png"},
         "muttering": {"idle": "nan0_mutter.png", "talking": "nan0_mutter_talk.png"},
+        # [Mood Expansion] Avatar aliases until dedicated PNGs exist.
+        "silly": {"idle": "nan0_smug.png", "talking": "nan0_smug_talk.png"},
+        "playful": {"idle": "nan0_smug.png", "talking": "nan0_smug_talk.png"},
+        "delighted": {"idle": "nan0_smug.png", "talking": "nan0_smug_talk.png"},
+        "curious": {"idle": "nan0_suspicion.png", "talking": "nan0_suspicion_talk.png"},
+        "excited": {"idle": "nan0_angry.png", "talking": "nan0_angry_talk.png"},
+        "fond": {"idle": "nan0_possessive.png", "talking": "nan0_possessive_talk.png"},
+        "chaotic_happy": {"idle": "nan0_angry.png", "talking": "nan0_angry_talk.png"},
     })
 
     png_dir: str = "data/pngs/nan0"
@@ -90,6 +98,10 @@ class BrainConfig:
             "deep_model": "qwen2.5:1.5b",
             "latency_budget": 25.0,
             "deep_interval": 45,
+            "kyo_voice_inbox": "data/input/kyo_voice_inbox.jsonl",
+            "discord_inbox": "data/input/discord_voice_inbox.jsonl",
+            "perception_debug_enabled": True,
+            "perception_debug_path": "data/nan0/perception_debug.jsonl",
             "persona_path": "data/prompts/nan0_persona.txt",
             "enable_body": False,
             "fallback_to_template": False,

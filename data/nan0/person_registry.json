@@ -1,0 +1,22 @@
+{
+  "kyo": {
+    "actor_id": "kyo",
+    "display_name": "Kyo",
+    "gender": "girl",
+    "pronouns": [
+      "she",
+      "her"
+    ],
+    "relationship": "creator_anchor",
+    "tier": "BONDED",
+    "importance": 1.0,
+    "emotional_valence": 1.0,
+    "last_seen": 1780873932.6263304,
+    "first_seen": 1780866438.2035196,
+    "interaction_count": 16,
+    "total_time_together_seconds": 7486.0038940906525,
+    "notes": [],
+    "banned": false,
+    "locked": true
+  }
+}

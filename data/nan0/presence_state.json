@@ -1,23 +1,13 @@
 {
-  "timestamp": 1780612351.1528938,
+  "timestamp": 0.0,
   "pressure": 0.0,
-  "presence_mode": "autonomous_happy",
+  "presence_mode": "neutral_self_directed",
   "emotional_mode": "normal",
   "last_seen_summary": "the screen is quiet",
-  "last_fast_state": {
-    "screen_state": "stable",
-    "frame_diff": 0.001,
-    "brightness": 36.74,
-    "brightness_delta": 0.0,
-    "motion_intensity": 0.0,
-    "semantic_activity": "high motion gameplay",
-    "semantic_confidence": 0.45
-  },
-  "last_spoken_at": 1780612331.3104239,
-  "last_kyo_heard_at": 0.0,
-  "last_discord_heard_at": 0.0,
+  "last_fast_state": {},
   "recent_events": [],
-  "recent_lines": [
-    "i am here real inputs only no fake friends in my wires"
-  ]
+  "recent_lines": [],
+  "active_question": null,
+  "active_obsessions": [],
+  "personal_canon": []
 }
