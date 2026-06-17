@@ -11,8 +11,22 @@ This module is intentionally small and safe:
 
 from __future__ import annotations
 
+import random
 import re
+from dataclasses import dataclass
 from typing import Optional
+
+
+@dataclass
+class Nan0VoiceConfig:
+    enabled: bool = True
+    max_spoken_chars: int = 220
+    allow_pauses: bool = True
+    soft_kyo_mode: bool = True
+    log_voice_formatting: bool = True
+    remove_markdown: bool = True
+    collapse_repeated_punctuation: bool = True
+    preserve_nan0_attitude: bool = True
 
 
 _MARKDOWN_PATTERNS = [
@@ -28,9 +42,24 @@ _MARKDOWN_PATTERNS = [
 _BANNED_TTS_FILLER = {
     "how can i help you",
     "thanks for the message",
-    "the desktop is calm right now",
-    "i noticed that you are",
 }
+
+# [Mood Expansion] Text-level voice behavior hints. The actual audio backend may use
+# these values later; this formatter only applies safe punctuation/pacing changes.
+MOOD_VOICE_BEHAVIOR = {
+    "silly": {"pitch": 0.15, "speed": 0.20, "glitch": "light", "rhythm": "quick"},
+    "playful": {"pitch": 0.10, "speed": 0.15, "rhythm": "bouncy"},
+    "delighted": {"pitch": 0.05, "speed": 0.10, "pitch_variance": 0.08},
+    "curious": {"pitch": -0.05, "speed": -0.15, "rhythm": "deliberate"},
+    "excited": {"pitch": 0.20, "speed": 0.25, "volume": 0.15, "unstable": True},
+    "fond": {"pitch": -0.10, "speed": -0.20, "volume": -0.10, "rhythm": "soft"},
+    "chaotic_happy": {"pitch_random": 0.30, "speed_random": 0.40, "glitch": "heavy"},
+}
+
+
+def format_for_mood(mood: str, text: str) -> str:
+    # [Mood Expansion] Compatibility hook for future VTuber/TTS layers.
+    return format_nan0_voice(text, mood=mood)
 
 
 def _clean_text(text: str) -> str:
@@ -80,16 +109,29 @@ def _target_from_text(text: str, explicit_target: Optional[str]) -> str:
 
 
 def _infer_mood(text: str, explicit_mood: Optional[str]) -> str:
+    # [Mood Expansion] Keep expanded moods intact when passed from Nan0Skill.
     if explicit_mood:
         return explicit_mood.lower()
     lowered = text.lower()
+    if any(w in lowered for w in ["falling apart", "everything is wrong", "perfect"]):
+        return "chaotic_happy"
+    if any(w in lowered for w in ["excited", "about to", "voltage", "something is coming"]):
+        return "excited"
+    if any(w in lowered for w in ["worked", "obeyed", "hate how much", "delighted"]):
+        return "delighted"
+    if any(w in lowered for w in ["remember", "before", "used to", "fond"]):
+        return "fond"
+    if any(w in lowered for w in ["what is that", "why is that", "need to know", "curious", "maybe", "unknown", "can't tell", "cannot tell", "what is"]):
+        return "curious"
+    if any(w in lowered for w in ["teasing", "toying", "clever"]):
+        return "playful"
+    if any(w in lowered for w in ["silly", "nonsense", "dance", "chaos"]):
+        return "silly"
     if any(w in lowered for w in ["hate", "betray", "disaster", "thrashing", "insult", "hostile"]):
         return "offended"
     if any(w in lowered for w in ["good", "correct", "authority", "mine", "obviously"]):
         return "smug"
-    if any(w in lowered for w in ["maybe", "unknown", "can't tell", "cannot tell", "what is"]):
-        return "confused"
-    return "neutral"
+    return "normal"
 
 
 def format_nan0_voice(
@@ -98,8 +140,19 @@ def format_nan0_voice(
     target: Optional[str] = None,
     max_chars: int = 220,
     allow_pauses: bool = True,
+    config: Optional[Nan0VoiceConfig] = None,
 ) -> str:
-    """Return a TTS-ready Nan0 delivery line."""
+    """Return a TTS-ready Nan0 delivery line.
+
+    This formatter may clean/pause text for EdgeTTS, but it must not add names,
+    politeness, helpful framing, or personality corrections.
+    """
+    if config is not None:
+        if not config.enabled:
+            return str(text or "")
+        max_chars = int(config.max_spoken_chars)
+        allow_pauses = bool(config.allow_pauses)
+
     cleaned = _clean_text(text)
     if not cleaned:
         return ""
@@ -121,6 +174,14 @@ def format_nan0_voice(
     if allow_pauses:
         if mood_name in {"confused", "curious"}:
             cleaned = re.sub(r"\.\s+", "... ", cleaned, count=1)
+        elif mood_name in {"silly", "playful", "delighted"}:
+            cleaned = re.sub(r"\.\s+", "... ", cleaned, count=1)
+        elif mood_name in {"excited", "chaotic_happy"}:
+            cleaned = re.sub(r"\.\s+", "! ", cleaned, count=1)
+            if mood_name == "chaotic_happy" and "!" not in cleaned:
+                cleaned = cleaned.rstrip(".") + "!"
+        elif mood_name == "fond":
+            cleaned = re.sub(r"\.\s+", "... ", cleaned, count=1)
         elif mood_name in {"offended", "angry", "defensive"}:
             cleaned = re.sub(r"\.\s+", ". ", cleaned, count=1)
         elif mood_name in {"smug", "proud"}:
@@ -128,12 +189,8 @@ def format_nan0_voice(
         elif mood_name in {"sleepy", "soft_kyo", "quiet_attached"}:
             cleaned = re.sub(r"\.\s+", "... ", cleaned, count=1)
 
-    # Kyo delivery: direct address helps the line land in voice, but do not double-prefix.
-    if target_name == "kyo" and not cleaned.lower().startswith("kyo"):
-        if mood_name in {"soft_kyo", "quiet_attached"}:
-            cleaned = "Kyo... " + cleaned
-        else:
-            cleaned = "Kyo. " + cleaned
+    # Do not auto-prefix Kyo. Nan0's cognition decides when she says a name.
+    _ = target_name
 
     cleaned = _trim_to_limit(cleaned, max_chars)
     return cleaned.strip()

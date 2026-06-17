@@ -39,6 +39,7 @@ class AIVtuberBrain:
         self.playback_start_time = 0
         self.playback_sample_rate = 24000
         self.resume_buffer = None
+        self.last_nan0_speech_packet = None
         
         # event manager
         self.event_manager = EventManager()
@@ -59,9 +60,8 @@ class AIVtuberBrain:
     def memory_skill(self):
         return self.skill_manager.skills.get("memory")
 
-
     def _obs_enabled(self) -> bool:
-        """Return whether OBS output should be touched at runtime."""
+        """Return whether OBS should be touched at runtime."""
         if hasattr(self.config, "obs_enabled"):
             return bool(getattr(self.config, "obs_enabled"))
         obs_section = getattr(self.config, "obs", None)
@@ -69,22 +69,27 @@ class AIVtuberBrain:
             return bool(obs_section.get("enabled"))
         return True
 
-    def _get_nan0_skill(self):
+    def _get_active_nan0_skill(self):
         try:
-            return self.skill_manager.skills.get("nan0")
+            nan0 = self.skill_manager.skills.get("nan0")
         except Exception:
-            return None
+            nan0 = None
+        if nan0 and getattr(nan0, "is_active", False) and hasattr(nan0, "handle_external_message"):
+            return nan0
+        return None
 
-    def _apply_nan0_voice_effects(self, audio_data, sample_rate: int, mood: str):
-        """Apply Nan0 voice effects directly to generated TTS buffers."""
-        nan0_skill = self._get_nan0_skill()
-        if nan0_skill and hasattr(nan0_skill, "apply_voice_effects_to_audio_buffer"):
-            try:
-                return nan0_skill.apply_voice_effects_to_audio_buffer(audio_data, sample_rate, mood)
-            except Exception as exc:
-                logger.warning(f"Nan0 voice effects failed, using raw TTS buffer: {exc}")
-        return audio_data, sample_rate
+    async def _route_to_nan0(self, message: str, actor: str = "Kyo", source: str = "kyo", metadata: dict = None) -> Tuple[str, str]:
+        """The only allowed live dialogue route.
 
+        Brain no longer acts as a second chatbot brain. All live input must be
+        converted into a Nan0Skill event, then thought-first speech decides the
+        output.
+        """
+        nan0 = self._get_active_nan0_skill()
+        if not nan0:
+            logger.error("Nan0Skill is not active; refusing generic brain chatbot fallback.")
+            return "muttering", ""
+        return await nan0.handle_external_message(message, actor=actor, source=source, metadata=metadata or {})
 
     def initialize(self):
         """Loads resources and connects to services."""
@@ -172,47 +177,38 @@ class AIVtuberBrain:
 
 
     def _normalize_mood(self, mood: str) -> str:
-        allowed = {
-            "normal",
-            "suspicion",
-            "boredom",
-            "gremlin_rage",
-            "smug",
-            "possessive",
-            "offended",
-            "muttering",
-            "angry",
-            "bored",
-            "shock",
-            "love",
-            "cry",
-            "ew",
-            "neutral",
-        }
+        # [Mood Expansion] Preserve expanded Nan0 moods through brain output.
+        allowed = {'normal', 'suspicion', 'boredom', 'gremlin_rage', 'smug', 'possessive', 'offended', 'muttering', 'silly', 'playful', 'delighted', 'curious', 'excited', 'fond', 'chaotic_happy'}
         if not mood:
             return "normal"
         mood = str(mood).strip().lower()
-        if mood in allowed:
-            if mood == "angry":
-                return "gremlin_rage"
-            if mood == "bored":
-                return "boredom"
-            if mood == "neutral":
-                return "normal"
-            return mood
         mapping = {
-            "curiosity": "suspicion",
-            "curious": "suspicion",
-            "friendliness": "normal",
-            "friendly": "normal",
-            "annoyed": "offended",
-            "rage": "gremlin_rage",
-            "anger": "gremlin_rage",
-            "quiet": "muttering",
-            "fixation": "suspicion",
-            "existential": "muttering",
+            'happy': 'chaotic_happy',
+            'joy': 'delighted',
+            'love': 'fond',
+            'interested': 'curious',
+            'teasing': 'playful',
+            'nostalgic': 'fond',
+            'anticipating': 'excited',
+            'amused': 'silly',
+            'goofy': 'silly',
+            'warm': 'fond',
+            'angry': 'gremlin_rage',
+            'rage': 'gremlin_rage',
+            'annoyed': 'offended',
+            'offense': 'offended',
+            'bored': 'boredom',
+            'quiet': 'muttering',
+            'neutral': 'normal',
+            'friendliness': 'normal',
+            'friendly': 'normal',
+            'fixation': 'suspicion',
+            'existential': 'muttering',
         }
-        return mapping.get(mood, "normal")
+        mood = mapping.get(mood, mood)
+        if mood in allowed:
+            return mood
+        return "muttering"
 
     def _try_parse_json_obj(self, value):
         if isinstance(value, dict):
@@ -310,9 +306,24 @@ class AIVtuberBrain:
 
         return self._normalize_mood(mood), str(message or "...").strip(), metadata
 
+    def _play_audio_blocking_sync(self, audio_data, sample_rate, device_id):
+        """Blocking sounddevice playback used from a worker thread.
+
+        This prevents local playback from being started and then silently stepped on by
+        the asyncio loop. It keeps the event loop free while the real audio device
+        finishes playing Nan0's line.
+        """
+        import sounddevice as sd
+        try:
+            sd.stop()
+        except Exception:
+            pass
+        sd.play(audio_data, samplerate=sample_rate, device=device_id, blocking=True)
+
     async def _play_audio(self, audio_data, sample_rate, device_id):
         """
         Internal helper to play audio via sounddevice with tracking.
+        Uses blocking playback inside a thread so local audio is audible and stable.
         """
         import sounddevice as sd
         import time
@@ -321,10 +332,6 @@ class AIVtuberBrain:
         if len(audio_data) == 0:
             return
 
-        # Windows audio hardening for EdgeTTS + sounddevice.
-        # Some devices reject EdgeTTS native sample rates. Nan0 normalizes to
-        # 48 kHz stereo before playback, then falls back to the default device
-        # instead of crashing the whole runtime.
         target_sample_rate = int(getattr(self.config, "audio_output_sample_rate", 48000) or 48000)
 
         audio_data = np.asarray(audio_data)
@@ -362,30 +369,35 @@ class AIVtuberBrain:
         if device_id == "" or str(device_id).lower() == "none":
             device_id = None
 
+        logger.info(f"Local TTS blocking playback started device={device_id} sample_rate={sample_rate} samples={len(audio_data)}")
         try:
-            sd.play(audio_data, samplerate=sample_rate, device=device_id, blocking=False)
+            await asyncio.to_thread(self._play_audio_blocking_sync, audio_data, sample_rate, device_id)
+            logger.info("Local TTS blocking playback finished")
+        except asyncio.CancelledError:
+            try:
+                sd.stop()
+            except Exception:
+                pass
+            raise
         except Exception as e:
             logger.error(f"Audio playback failed on device {device_id}: {e}. Trying default output device.")
             try:
-                sd.play(audio_data, samplerate=sample_rate, device=None, blocking=False)
+                await asyncio.to_thread(self._play_audio_blocking_sync, audio_data, sample_rate, None)
+                logger.info("Local TTS blocking playback finished on default output")
             except Exception as e2:
                 logger.error(f"Audio playback failed on default output too: {e2}. Skipping audio instead of crashing.")
-                return
 
-        duration = len(audio_data) / float(sample_rate)
-        try:
-            await asyncio.sleep(duration)
-        except asyncio.CancelledError:
-            sd.stop()
-            raise
-
-    async def perform_output_task(self, mood: str, message: str):
+    async def perform_output_task(self, mood: str, message: str, speech_packet: dict = None):
         """Background task to handle audio/visual output."""
         import sounddevice as sd
         self.is_speaking = True
         try:
             logger.info(f"Mood: {mood}")
             logger.info(f"Message: {message}")
+            if not isinstance(speech_packet, dict) or not speech_packet.get("thought_id"):
+                raise RuntimeError("Audio output blocked: missing required speech_packet.thought_id")
+            speech_packet = dict(speech_packet)
+            thought_id = speech_packet["thought_id"]
 
             if self.current_typing_task and not self.current_typing_task.done():
                 logger.info("Interrupting previous typing task...")
@@ -395,7 +407,7 @@ class AIVtuberBrain:
                 logger.info("Interrupting previous speech task...")
                 self.current_speech_task.cancel()
 
-            if self._obs_enabled() and self.config.obs_text_source:
+            if self.config.obs_text_source:
                 self.obs.set_text("", self.config.obs_text_source)
 
             try:
@@ -407,16 +419,15 @@ class AIVtuberBrain:
                  else:
                      idle_path = talking_path = Path("placeholder.png") 
 
-            if self._obs_enabled():
-                if self.config.obs_source_type == "media":
-                    self.obs.set_media(talking_path)
-                else:
-                    self.obs.set_image(talking_path)
+            if self.config.obs_source_type == "media":
+                self.obs.set_media(talking_path)
+            else:
+                self.obs.set_image(talking_path)
 
 
             async with self.audio_lock:
                 self.current_typing_task = None
-                if self._obs_enabled() and self.config.obs_text_source:
+                if self.config.obs_text_source:
                     self.current_typing_task = asyncio.create_task(
                         self.obs.type_text(
                             text=message,
@@ -434,8 +445,33 @@ class AIVtuberBrain:
                 self.event_manager.publish(EventCategory.OUTPUT, "tts", f"Speaking: {message[:50]}...", metadata={"device_id": self.config.audio_device_id})
 
                 if message:
-                    audio_data, fs = await self.tts.generate_audio(message)
-                    audio_data, fs = self._apply_nan0_voice_effects(audio_data, fs, mood)
+                    audio_path = ""
+                    if hasattr(self.tts, "generate_audio_file"):
+                        audio_path = await self.tts.generate_audio_file(message, mood=mood)
+                        if audio_path:
+                            try:
+                                import soundfile as sf
+                                audio_data, fs = sf.read(audio_path, dtype="float32")
+                            except Exception as exc:
+                                logger.error(f"Could not read generated TTS file {audio_path}: {exc}")
+                                audio_data, fs = await self.tts.generate_audio(message, mood=mood)
+                        else:
+                            audio_data, fs = await self.tts.generate_audio(message, mood=mood)
+                    else:
+                        audio_data, fs = await self.tts.generate_audio(message)
+
+                    if speech_packet is not None:
+                        speech_packet = dict(speech_packet)
+                        speech_packet["thought_id"] = thought_id
+                        speech_packet["line_text"] = speech_packet.get("line_text") or message
+                        speech_packet["mood"] = speech_packet.get("mood") or mood
+                        speech_packet["audio_path"] = audio_path
+                        self.last_nan0_speech_packet = speech_packet
+
+                    if audio_path:
+                        routed = await self._route_audio_to_discord_voice(audio_path, speech_packet)
+                        logger.info(f"Discord VC audio route result: {routed}")
+
                     self.current_speech_task = asyncio.create_task(
                         self._play_audio(audio_data, fs, self.config.audio_device_id)
                     )
@@ -451,16 +487,41 @@ class AIVtuberBrain:
                         logger.info("Output tasks cancelled (Interruption).")
                         pass
 
-            if self._obs_enabled() and self.config.obs_text_source:
+            if self.config.obs_text_source:
                  self.obs.set_text("", self.config.obs_text_source, font_size=font_used)
             
-            if self._obs_enabled():
-                if self.config.obs_source_type == "media":
-                    self.obs.set_media(idle_path)
-                else:
-                    self.obs.set_image(idle_path)
+            if self.config.obs_source_type == "media":
+                self.obs.set_media(idle_path)
+            else:
+                self.obs.set_image(idle_path)
         finally:
             self.is_speaking = False
+
+
+    async def _route_audio_to_discord_voice(self, audio_path: str, speech_packet: dict = None) -> bool:
+        """Send the validated Nan0 speech packet audio to Discord VC if connected.
+
+        This is an output channel only. It does not generate text and it does not
+        bypass Nan0Skill's thought_id gate.
+        """
+        speech_packet = speech_packet or {}
+        thought_id = speech_packet.get("thought_id")
+        if not thought_id:
+            logger.warning("Discord VC audio skipped: missing thought_id on speech packet.")
+            return False
+        if not audio_path:
+            return False
+
+        try:
+            skills = getattr(getattr(self, "skill_manager", None), "skills", {})
+            discord_skill = skills.get("discord") if isinstance(skills, dict) else None
+            if not discord_skill or not getattr(discord_skill, "is_active", False):
+                return False
+            if hasattr(discord_skill, "play_audio_file"):
+                return await discord_skill.play_audio_file(audio_path, speech_packet=speech_packet)
+        except Exception as exc:
+            logger.warning(f"Discord VC audio route skipped: {exc}")
+        return False
 
     async def interrupt(self):
         """
@@ -501,7 +562,7 @@ class AIVtuberBrain:
         if self.current_typing_task and not self.current_typing_task.done():
             self.current_typing_task.cancel()
             
-        if self._obs_enabled() and self.config.obs_text_source:
+        if self.config.obs_text_source:
              self.obs.set_text("", self.config.obs_text_source)
         
         self.history_manager.add_message("system", "[Interrupted by User]")
@@ -522,7 +583,7 @@ class AIVtuberBrain:
         try:
              async with self.audio_lock:
 
-                 if self._obs_enabled() and "normal" in self.png_map:
+                 if "normal" in self.png_map:
                      _, talking_path = self.png_map["normal"]
                      if self.config.obs_source_type == "media":
                         self.obs.set_media(talking_path)
@@ -540,7 +601,7 @@ class AIVtuberBrain:
                  self.resume_buffer = None
         finally:
             self.is_speaking = False
-            if self._obs_enabled() and "normal" in self.png_map:
+            if "normal" in self.png_map:
                  idle_path, _ = self.png_map["normal"]
                  if self.config.obs_source_type == "media":
                     self.obs.set_media(idle_path)
@@ -568,106 +629,71 @@ class AIVtuberBrain:
         return False
 
     async def generate_response(self, user_text: str, system_prompt: str = None) -> Tuple[str, str]:
-        """Generates the response but does NOT play it."""
-        
+        """Deprecated compatibility wrapper.
+
+        Live Nan0 dialogue must enter Nan0Skill and carry a thought_id before
+        any output. This method no longer calls the generic LLM path.
+        """
         if self.resume_buffer is not None and self._is_backchannel(user_text):
             logger.info(f"Backchannel detected ('{user_text}'). Resuming...")
             self.history_manager.add_message("user", user_text)
             await self._resume_speech()
             return "neutral", "[RESUMED]"
 
+        if system_prompt is not None:
+            logger.warning("generate_response(system_prompt=...) ignored: direct prompt-to-speech path is disabled.")
 
-        self.event_manager.publish(EventCategory.INPUT, "user", user_text)
-        history = self.history_manager.get_recent_history()
-        self.history_manager.add_message("user", user_text)
-        
-        final_prompt = system_prompt if system_prompt else self.system_prompt
-        
-        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        final_prompt = f"CURRENT DATE: {today_str}\n\n{final_prompt}"
+        return await self.process_text_input(user_text)
 
-        # --- MEMORY INJECTION (RAG) ---
-        if self.memory_skill and self.memory_skill.enabled:
-             # 2. retrieve context
-             context = self.memory_skill.retrieve_context(user_text)
-             
-             # 3. inject context at the end
-             memory_section = f"\n\n[LONG TERM MEMORY]\n{context}\n"
-             final_prompt += memory_section
-
-        
-        mood, message, metadata = self.llm.chat(user_text, system_prompt=final_prompt, history=history)
-        mood, message, metadata = self._normalize_llm_output(mood, message, metadata, user_text=user_text)
-        
-        # save with metadata
-        if "mood" in metadata:
-            del metadata["mood"]
-        self.history_manager.add_message("assistant", message, mood=mood, **metadata)
-        
-        self.event_manager.publish(EventCategory.OUTPUT, "llm", message, metadata={"mood": mood})
-        return mood, message
 
     async def generate_audio_response(self, audio_path: str) -> Tuple[str, str, str]:
-        import os
-        filename = os.path.basename(audio_path)       
-        history = self.history_manager.get_recent_history()
+        """Deprecated compatibility wrapper for audio input.
+
+        Audio is transcribed, then routed into Nan0Skill. It never calls
+        llm.chat() or llm.chat_audio() directly.
+        """
         transcript = ""
-        
+
         if self.stt:
-             transcript = self.stt.transcribe(audio_path)
-             if transcript:
-                  logger.info(f"Audio Transcript: '{transcript}'")
-                  if self.resume_buffer is not None and self._is_backchannel(transcript):
-                       logger.info("Audio Backchannel detected. Resuming...")
-                       self.history_manager.add_message("user", transcript)
-                       await self._resume_speech()
-                       return "neutral", "[RESUMED]", transcript
-        
-        # prepare context (same as generate_response)
-        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        final_prompt = f"CURRENT DATE: {today_str}\n\n{self.system_prompt}"
-        
-        if self.memory_skill and self.memory_skill.enabled:
-             # use transcript for retrieval if available, else generic
-             query = transcript if transcript else "Audio Message"
-             context = self.memory_skill.retrieve_context(query) 
-             memory_section = f"\n\n[LONG TERM MEMORY]\n{context}\n"
-             final_prompt += memory_section
+            try:
+                transcript = self.stt.transcribe(audio_path) or ""
+            except Exception as e:
+                logger.error(f"STT failed: {e}")
+                transcript = ""
 
-        # save user turn to history (mirrors generate_response behaviour)
-        user_content = transcript if transcript else "[Audio Message]"
-        self.event_manager.publish(EventCategory.INPUT, "user", user_content)
-        self.history_manager.add_message("user", user_content)
-
-        # call LLM
-        
         if transcript:
-             mood, message, metadata = self.llm.chat(transcript, system_prompt=final_prompt, history=history)
-             mood, message, metadata = self._normalize_llm_output(mood, message, metadata, user_text=transcript)
-        else:
-             mood, message, metadata = self.llm.chat_audio(audio_path, system_prompt=final_prompt, history=history)
-             transcript = "[Audio Message]"
-             mood, message, metadata = self._normalize_llm_output(mood, message, metadata, user_text=transcript)
-        
-        if "mood" in metadata:
-            del metadata["mood"]
-        self.history_manager.add_message("assistant", message, mood=mood, **metadata)
-        
+            transcript = transcript.strip()
+            logger.info(f"Audio Transcript: '{transcript}'")
+            if self.resume_buffer is not None and self._is_backchannel(transcript):
+                logger.info("Audio Backchannel detected. Resuming...")
+                self.history_manager.add_message("user", transcript)
+                await self._resume_speech()
+                return "neutral", "[RESUMED]", transcript
+
+        if not transcript:
+            logger.warning("Audio input received, but STT produced no transcript. No generic audio LLM fallback allowed.")
+            return "muttering", "", ""
+
+        self.event_manager.publish(EventCategory.INPUT, "kyo_voice", transcript)
+        self.history_manager.add_message("user", transcript)
+        mood, message = await self._route_to_nan0(
+            transcript,
+            actor="Kyo",
+            source="kyo_voice",
+            metadata={"audio_path": audio_path},
+        )
+        if message:
+            self.history_manager.add_message("assistant", message, mood=mood, routed_by="Nan0Skill")
+
         return mood, message, transcript
 
-    # deprecated single-call methods kept for compatibility if needed, but updated to use new flow
-    async def process_text_input(self, user_text: str):
-        nan0 = None
-        try:
-            nan0 = self.skill_manager.skills.get("nan0")
-        except Exception:
-            nan0 = None
-        if nan0 and getattr(nan0, "is_active", False) and hasattr(nan0, "handle_external_message"):
-            return await nan0.handle_external_message(user_text, actor="kyo", source="kyo")
 
-        mood, message = await self.generate_response(user_text)
-        mood, message = normalize_mood_message(mood, message, target_actor="kyo")
-        await self.perform_output_task(mood, message)
+    async def process_text_input(self, user_text: str):
+        self.event_manager.publish(EventCategory.INPUT, "kyo_text", user_text)
+        self.history_manager.add_message("user", user_text)
+        mood, message = await self._route_to_nan0(user_text, actor="Kyo", source="kyo")
+        if message:
+            self.history_manager.add_message("assistant", message, mood=mood, routed_by="Nan0Skill")
         return mood, message
 
     async def process_audio_input(self, audio_path: str):
@@ -677,19 +703,16 @@ class AIVtuberBrain:
                 transcript = self.stt.transcribe(audio_path) or ""
             except Exception as e:
                 logger.error(f"STT failed: {e}")
-        if transcript:
-            nan0 = None
-            try:
-                nan0 = self.skill_manager.skills.get("nan0")
-            except Exception:
-                nan0 = None
-            if nan0 and getattr(nan0, "is_active", False) and hasattr(nan0, "handle_external_message"):
-                mood, message = await nan0.handle_external_message(transcript, actor="kyo", source="kyo_mic")
-                return mood, message
 
-        mood, message, _ = await self.generate_audio_response(audio_path)
-        mood, message = normalize_mood_message(mood, message, target_actor="kyo")
-        await self.perform_output_task(mood, message)
+        if not transcript:
+            logger.warning("Audio input received, but STT produced no transcript. No generic fallback allowed.")
+            return "muttering", ""
+
+        self.event_manager.publish(EventCategory.INPUT, "kyo_voice", transcript)
+        self.history_manager.add_message("user", transcript)
+        mood, message = await self._route_to_nan0(transcript, actor="Kyo", source="kyo_voice")
+        if message:
+            self.history_manager.add_message("assistant", message, mood=mood, routed_by="Nan0Skill")
         return mood, message
 
     async def process_discord_interaction(self, audio_path: str, username: str) -> Tuple[str, str, str, bytes]:
@@ -778,25 +801,23 @@ class AIVtuberBrain:
 
         logger.info(f"Combined Context:\n{combined_text.strip()}")
 
-        mood, message = await self.generate_response(combined_text.strip())
+        mood, message = await self._route_to_nan0(
+            combined_text.strip(),
+            actor=items[0]['username'] if items else "Discord",
+            source="discord_voice",
+            metadata={"full_transcript_log": full_transcript_log},
+        )
+        if not message:
+            message = ""
         
-        audio_data, sample_rate = await self.tts.generate_audio(message)
-        audio_data, sample_rate = self._apply_nan0_voice_effects(audio_data, sample_rate, mood)
-        
-        import io
-        import soundfile as sf
-        byte_io = io.BytesIO()
-        sf.write(byte_io, audio_data, sample_rate, format='WAV')
-        audio_bytes = byte_io.getvalue()
-        
-        asyncio.create_task(self._perform_visual_only_task(mood, message, len(audio_data)/sample_rate))
-
+        # Nan0Skill is the only output owner. It creates the required speech_packet
+        # and routes voice/display/Discord audio through perform_output_task().
+        # This legacy Discord buffer path must never generate TTS audio directly.
         leader = items[0]
-        
+
         if not leader['future'].done():
-             leader['future'].set_result(("success", message, full_transcript_log, audio_bytes))
-             
-        # resolve followers (empty audio)
+             leader['future'].set_result(("success", message, full_transcript_log, b""))
+
         for item in items[1:]:
              if not item['future'].done():
                  item['future'].set_result(("success", "(Merged)", item['transcript'], b""))
@@ -814,13 +835,12 @@ class AIVtuberBrain:
                  _, talking_path = self.png_map.get("normal", (Path("placeholder.png"), Path("placeholder.png")))
 
             # START ANIMATOIN
-            if self._obs_enabled():
-                if self.config.obs_source_type == "media":
-                    self.obs.set_media(talking_path)
-                else:
-                    self.obs.set_image(talking_path)
+            if self.config.obs_source_type == "media":
+                self.obs.set_media(talking_path)
+            else:
+                self.obs.set_image(talking_path)
 
-            if self._obs_enabled() and self.config.obs_text_source:
+            if self.config.obs_text_source:
                  await self.obs.type_text(
                     text=message,
                     source_name=self.config.obs_text_source,
@@ -836,7 +856,7 @@ class AIVtuberBrain:
                 await asyncio.sleep(duration)
                 
             # END ANIMATION
-            if self._obs_enabled() and "normal" in self.png_map:
+            if "normal" in self.png_map:
                  idle_path, _ = self.png_map["normal"]
                  if self.config.obs_source_type == "media":
                     self.obs.set_media(idle_path)

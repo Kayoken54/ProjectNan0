@@ -8,7 +8,7 @@ module.exports = {
         const embed = new EmbedBuilder()
             .setColor(0x00FF00)
             .setTitle('Hello!')
-            .setDescription(`Hi there, ${message.author.username}! I am Bea.`)
+            .setDescription(`Nan0 Discord bridge is alive. Unfortunately.`)
             .setThumbnail(client.user.displayAvatarURL())
             .setTimestamp();
 
