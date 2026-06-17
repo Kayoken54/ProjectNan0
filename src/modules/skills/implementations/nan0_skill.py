@@ -22,6 +22,7 @@ from src.modules.skills.implementations.nan0_thought_engine_v3 import (
     generate_inner_thought_packet,
 )
 from src.utils.logger import get_logger
+from src.modules.nan0.session_timeline import record_session_event, record_thought_packet
 
 try:
     from src.modules.nan0.identity_memory import resolve_identity_text
@@ -2436,6 +2437,7 @@ class Nan0Skill(BaseSkill):
         self._recent_line_times[clean] = time.time()
 
     def _remember_event(self, event: Dict[str, Any]):
+        record_session_event(event)
         self.recent_events.append(
             {
                 "time": round(time.time(), 2),
