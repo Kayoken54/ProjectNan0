@@ -55,7 +55,7 @@ function appendNan0Inbox(message, cleanContent, displayName, addressed) {
         const dir = path.dirname(DISCORD_INBOX_PATH);
         fs.mkdirSync(dir, { recursive: true });
         const rec = {
-            source: 'discord',
+            source: 'discord_text',
             speaker: displayName || message.author.username,
             text: cleanContent,
             addressed_to_nan0: !!addressed,
@@ -203,25 +203,11 @@ client.on('messageCreate', async (message) => {
     const addressedToNan0 = isMentioned || isReplyToBot || isDM || /\b(nan0|nano)\b/i.test(message.content);
     appendNan0Inbox(message, cleanContent, displayName, addressedToNan0);
 
-    // in dms, mentions, and replies, also ask the web brain for a text reply.
+    // [Discord Bridge] Do not call the old :8000 Brain chat endpoint.
+    // Nan0Skill reads the JSONL inbox and owns cognition. Outbound replies are
+    // sent back through this bot via /send when Nan0Skill decides to speak.
     if (isMentioned || isReplyToBot || isDM) {
-        await message.channel.sendTyping();
-
-        const axios = require('axios');
-        try {
-            const response = await axios.post(`http://127.0.0.1:${PORT === 3030 ? 8000 : 8000}/discord/chat`, {
-                username: displayName,
-                message: cleanContent,
-                channelId: message.channel.id
-            });
-
-            if (response.data && response.data.status === 'success') {
-                const replyText = response.data.response;
-                await message.reply(replyText);
-            }
-        } catch (error) {
-            console.error("Error talking to Brain:", error.message);
-        }
+        await message.channel.sendTyping().catch(() => {});
     }
 });
 

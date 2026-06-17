@@ -190,26 +190,14 @@ class OllamaLLM(LLMInterface):
         system_prompt: Optional[str] = None,
         history: list = None,
     ) -> Tuple[str, str, Dict]:
-        prompt_parts = [
-            "SPEECH SEED:",
-            str(user_input or "").strip(),
-            "",
-            "This seed is Nan0's private thought or live emotional pressure.",
-            "Compress it into spoken dialogue.",
-            "",
-            "Output requirements:",
-            "- ONLY raw Nan0 dialogue.",
-            "- No JSON.",
-            "- No markdown.",
-            "- No label.",
-            "- One short line.",
-            "- Fragmented, emotional, sarcastic.",
-            "- Do not answer like an assistant.",
-            "- Do not explain the thought.",
-            "- Do not say 'continue with your thoughts'.",
-            "",
-            "Nan0:",
-        ]
+        """Generate raw Nan0 speech.
+
+        The provider must not wrap an already-shaped Nan0Skill speech seed in
+        another instruction block. Nan0Skill owns speech prompt construction.
+        This method only adds compact recent context when supplied, then sends
+        the prompt to /api/generate with the speech persona.
+        """
+        prompt_parts = []
 
         if history:
             compact_history = []
@@ -219,9 +207,12 @@ class OllamaLLM(LLMInterface):
                 if content:
                     compact_history.append(f"{role}: {content}")
             if compact_history:
-                prompt_parts.insert(0, "RECENT CONTEXT:\n" + "\n".join(compact_history) + "\n")
+                prompt_parts.append("Recent context:")
+                prompt_parts.extend(compact_history)
+                prompt_parts.append("")
 
-        prompt = "\n".join(prompt_parts)
+        prompt_parts.append(str(user_input or "").strip())
+        prompt = "\n".join(part for part in prompt_parts if part is not None).strip()
 
         try:
             raw = self._generate(
@@ -237,7 +228,7 @@ class OllamaLLM(LLMInterface):
 
             return mood, message, {
                 "raw": raw,
-                "normalized_by": "ollama_provider_speech_persona_raw_text",
+                "normalized_by": "ollama_provider_raw_speech_no_wrapper",
                 "api": "/api/generate",
                 "system_sent": True,
                 "persona_path": str(self.speech_persona_path),

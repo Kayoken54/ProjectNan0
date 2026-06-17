@@ -66,16 +66,26 @@ class MinecraftSkill(BaseSkill):
                 )
                 return
 
-            # infer mood
             if self.context:
-                # save to history
-                self.context.history_manager.add_message(
-                    role="assistant", 
-                    content=thought, 
-                    mood="normal", 
-                    metadata={"source": "minecraft_thought"}
-                )
-                await self.context.perform_output_task("normal", thought)
+                nan0_skill = None
+                try:
+                    nan0_skill = getattr(self.context.skill_manager, "skills", {}).get("nan0")
+                except Exception:
+                    nan0_skill = None
+
+                if nan0_skill and getattr(nan0_skill, "is_active", False) and hasattr(nan0_skill, "handle_external_message"):
+                    await nan0_skill.handle_external_message(
+                        thought,
+                        actor="Minecraft",
+                        source="minecraft_agent",
+                        metadata={
+                            "source_skill": "minecraft",
+                            "raw_agent_thought": thought,
+                            "addressed_to_nan0": False,
+                        },
+                    )
+                else:
+                    self.log("Minecraft agent thought captured, but Nan0Skill is inactive; no direct TTS fallback allowed.")
         finally:
             if self.pending_speech > 0:
                 self.pending_speech -= 1
