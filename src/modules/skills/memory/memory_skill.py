@@ -7,8 +7,6 @@ from pathlib import Path
 
 from src.core.config import BrainConfig
 from src.modules.skills.base_skill import BaseSkill
-from src.modules.skills.memory.storage import MemoryStorage
-from src.modules.skills.memory.generator import DiaryGenerator
 from src.utils.logger import get_logger
 
 logger = get_logger("bea.skills.memory")
@@ -17,6 +15,8 @@ logger = get_logger("bea.skills.memory")
 class MemorySkill(BaseSkill):
     _shared_storage = None
     _storage_initialized = False
+    _storage_class = None
+    _generator_class = None
 
     def __init__(self, name: str, config: BrainConfig, brain):
         super().__init__(name, config, brain)
@@ -44,6 +44,7 @@ class MemorySkill(BaseSkill):
         )
 
         if MemorySkill._shared_storage is None:
+            MemoryStorage = self._memory_storage_class()
             logger.info(
                 "MemorySkill: Creating shared MemoryStorage singleton."
             )
@@ -58,6 +59,23 @@ class MemorySkill(BaseSkill):
         self.storage = MemorySkill._shared_storage
         self.generator = None
 
+
+    @classmethod
+    def _memory_storage_class(cls):
+        if cls._storage_class is None:
+            from src.modules.skills.memory.storage import MemoryStorage
+
+            cls._storage_class = MemoryStorage
+        return cls._storage_class
+
+    @classmethod
+    def _diary_generator_class(cls):
+        if cls._generator_class is None:
+            from src.modules.skills.memory.generator import DiaryGenerator
+
+            cls._generator_class = DiaryGenerator
+        return cls._generator_class
+
     def initialize(self):
         if not self.enabled:
             logger.info(
@@ -65,33 +83,42 @@ class MemorySkill(BaseSkill):
             )
             return
 
-        if not MemorySkill._storage_initialized:
-            logger.info(
-                "MemorySkill: Initializing shared MemoryStorage."
+        logger.info(
+            "MemorySkill: Lazy mode enabled; ChromaDB and diary generator will initialize on first memory use."
+        )
+
+
+    def _ensure_storage_initialized(self) -> bool:
+        if MemorySkill._storage_initialized:
+            return True
+
+        logger.info(
+            "MemorySkill: Lazy-initializing shared MemoryStorage."
+        )
+        if not self.storage.initialize():
+            logger.error(
+                "MemorySkill: Storage initialization failed."
             )
+            self.skill_config["enabled"] = False
+            return False
 
-            if not self.storage.initialize():
-                logger.error(
-                    "MemorySkill: Storage initialization failed."
-                )
-                self.skill_config["enabled"] = False
-                return
+        MemorySkill._storage_initialized = True
+        return True
 
-            MemorySkill._storage_initialized = True
-
-        else:
-            logger.info(
-                "MemorySkill: Reusing initialized MemoryStorage."
-            )
-
-        if hasattr(self.context, "llm"):
-            self.generator = DiaryGenerator(
-                self.context.llm
-            )
-        else:
+    def _ensure_generator_initialized(self) -> bool:
+        if self.generator:
+            return True
+        if not hasattr(self.context, "llm"):
             logger.error(
                 "MemorySkill: Brain LLM not available."
             )
+            return False
+
+        DiaryGenerator = self._diary_generator_class()
+        self.generator = DiaryGenerator(
+            self.context.llm
+        )
+        return True
 
     async def start(self):
         if self.is_active:
@@ -138,7 +165,7 @@ class MemorySkill(BaseSkill):
         if not self.enabled:
             return
 
-        if not self.storage.collection:
+        if not self._ensure_storage_initialized():
             return
 
         if len(history) < 2:
@@ -167,10 +194,7 @@ class MemorySkill(BaseSkill):
         session_id: str,
         history: List[Dict]
     ):
-        if not self.generator:
-            logger.error(
-                "MemorySkill: Generator not initialized."
-            )
+        if not self._ensure_storage_initialized() or not self._ensure_generator_initialized():
             return
 
         try:
@@ -249,6 +273,9 @@ class MemorySkill(BaseSkill):
         limit: int = 3
     ) -> str:
         if not self.enabled:
+            return ""
+
+        if not self._ensure_storage_initialized():
             return ""
 
         try:

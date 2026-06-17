@@ -8,7 +8,6 @@ from src.core.resources import load_avatar_resources, resolve_mood_paths
 from src.utils.history_manager import HistoryManager
 from src.modules.skills.skill_manager import SkillManager
 from src.core.events import EventManager, EventCategory
-from src.modules.skills.memory.memory_skill import MemorySkill
 from src.utils.logger import get_logger
 import datetime
 from src.utils.nan0_output_normalizer import normalize_mood_message
@@ -57,7 +56,7 @@ class AIVtuberBrain:
 
 
     @property
-    def memory_skill(self) -> MemorySkill:
+    def memory_skill(self):
         return self.skill_manager.skills.get("memory")
 
 
@@ -165,8 +164,9 @@ class AIVtuberBrain:
         self.history_manager.create_session()
         logger.info(f"Created new session: {self.history_manager.session_id}")
         
-        if prev_session_id and prev_history:
-             self.memory_skill.process_previous_session(prev_session_id, prev_history)
+        memory_skill = self.memory_skill
+        if prev_session_id and prev_history and memory_skill:
+             memory_skill.process_previous_session(prev_session_id, prev_history)
              
         return self.history_manager.session_id
 
