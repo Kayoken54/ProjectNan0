@@ -1,6 +1,4 @@
 from src.modules.skills.base_skill import BaseSkill
-from src.modules.skills.minecraft.mc_agent.core.agent import Agent
-from src.modules.skills.minecraft.mc_agent.core.config import Config as MCConfig
 from src.core.events import EventCategory
 from src.utils.logger import get_logger
 import logging
@@ -9,6 +7,19 @@ import asyncio
 logger = get_logger("bea.skills.minecraft")
 
 class MinecraftSkill(BaseSkill):
+    Agent = None
+    MCConfig = None
+
+    @classmethod
+    def _load_minecraft_agent(cls):
+        if cls.Agent is None or cls.MCConfig is None:
+            from src.modules.skills.minecraft.mc_agent.core.agent import Agent
+            from src.modules.skills.minecraft.mc_agent.core.config import Config as MCConfig
+
+            cls.Agent = Agent
+            cls.MCConfig = MCConfig
+        return cls.Agent, cls.MCConfig
+
     def initialize(self):
         logger.info(f"Initializing {self.name} skill...")
         
@@ -18,6 +29,8 @@ class MinecraftSkill(BaseSkill):
         except RuntimeError:
             self.loop = asyncio.new_event_loop()
             
+        Agent, MCConfig = self._load_minecraft_agent()
+
         # sync config
         config_dict = {
             "openai_key": self.config.openai_key,
@@ -141,6 +154,7 @@ class MinecraftSkill(BaseSkill):
                     "openai_key": self.config.openai_key,
                     "minecraft": self.skill_config
                 }
+                _, MCConfig = self._load_minecraft_agent()
                 MCConfig.update_from_dict(config_dict)
             except Exception as e:
                 pass
@@ -150,6 +164,7 @@ class MinecraftSkill(BaseSkill):
         self.log("Handling Config Reload...")
         
         # update static config
+        _, MCConfig = self._load_minecraft_agent()
         MCConfig.update_from_dict({
             "openai_key": self.config.openai_key,
             "minecraft": self.skill_config
