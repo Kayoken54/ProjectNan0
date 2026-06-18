@@ -1,6 +1,3 @@
-import chromadb
-
-from chromadb.utils import embedding_functions
 from typing import Optional, Dict
 
 from src.utils.logger import get_logger
@@ -25,13 +22,27 @@ class MemoryStorage:
         self.chroma_client = None
         self.collection = None
         self.embedding_function = None
+        self.initialized = False
+
+
+    @staticmethod
+    def _load_chromadb():
+        import chromadb
+        from chromadb.utils import embedding_functions
+
+        return chromadb, embedding_functions
 
     def initialize(self) -> bool:
+
+        if self.initialized and self.collection is not None:
+            return True
 
         try:
             logger.info(
                 f"MemoryStorage: Initializing ChromaDB at {self.db_path}..."
             )
+
+            chromadb, embedding_functions = self._load_chromadb()
 
             self.chroma_client = chromadb.PersistentClient(
                 path=self.db_path
@@ -80,6 +91,7 @@ class MemoryStorage:
                 f"MemoryStorage: ChromaDB initialized. Count: {self.collection.count()}"
             )
 
+            self.initialized = True
             return True
 
         except Exception as e:

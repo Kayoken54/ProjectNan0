@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from src.modules.skills.base_skill import BaseSkill
 from src.modules.skills.implementations.nan0_thought_engine_v3 import generate_inner_thought_packet
+from src.modules.nan0.session_timeline import record_session_event, record_thought_packet
 from src.utils.logger import get_logger
 
 logger = get_logger("bea.skills.nan0_vision")
@@ -531,6 +532,21 @@ class Nan0VisionSkill(BaseSkill):
         }
 
     def _emit_thought(self, thought_packet: Dict[str, Any]):
+        record_thought_packet(thought_packet)
+        record_session_event(
+            {
+                "event_id": thought_packet.get("thought_id"),
+                "event_type": "vision_event",
+                "source": "vision_stack_v1",
+                "speaker": "screen",
+                "source_actor_id": "screen",
+                "text": thought_packet.get("private_text") or thought_packet.get("thought_text") or "vision event",
+                "timestamp": thought_packet.get("created_at") or time.time(),
+                "priority": "low",
+                "thought_id": thought_packet.get("thought_id"),
+                "mood": thought_packet.get("mood"),
+            }
+        )
         if self.context and hasattr(self.context, "emit_event"):
             self.context.emit_event("nan0_thought_generated", thought_packet)
             logger.info(f"Vision thought emitted: {thought_packet.get('thought_id', 'unknown')}")

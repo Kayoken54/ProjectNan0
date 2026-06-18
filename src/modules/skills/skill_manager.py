@@ -1,14 +1,9 @@
 import asyncio
-from typing import Dict, Type
+from importlib import import_module
+from typing import Dict, Type, Union
 
 from src.core.config import BrainConfig
 from src.modules.skills.base_skill import BaseSkill
-from src.modules.skills.implementations.monologue import MonologueSkill
-from src.modules.skills.implementations.minecraft_skill import MinecraftSkill
-from src.modules.skills.memory.memory_skill import MemorySkill
-from src.modules.skills.discord.discord_skill import DiscordSkill
-from src.modules.skills.implementations.nan0_skill import Nan0Skill
-from src.modules.skills.implementations.nan0_vision_skill import Nan0VisionSkill
 from src.utils.logger import get_logger
 
 logger = get_logger("bea.skills.manager")
@@ -21,13 +16,13 @@ class SkillManager:
         self.skills: Dict[str, BaseSkill] = {}
         self.running = False
         self._loop_task = None
-        self._skill_classes: Dict[str, Type[BaseSkill]] = {
-            "monologue": MonologueSkill,
-            "minecraft": MinecraftSkill,
-            "memory": MemorySkill,
-            "discord": DiscordSkill,
-            "nan0_vision": Nan0VisionSkill,
-            "nan0": Nan0Skill,
+        self._skill_classes: Dict[str, Union[Type[BaseSkill], str]] = {
+            "nan0": "src.modules.skills.implementations.nan0_skill:Nan0Skill",
+            "nan0_vision": "src.modules.skills.implementations.nan0_vision_skill:Nan0VisionSkill",
+            "memory": "src.modules.skills.memory.memory_skill:MemorySkill",
+            "monologue": "src.modules.skills.implementations.monologue:MonologueSkill",
+            "minecraft": "src.modules.skills.implementations.minecraft_skill:MinecraftSkill",
+            "discord": "src.modules.skills.discord.discord_skill:DiscordSkill",
         }
 
     def log(self, skill_name: str, message: str):
@@ -69,7 +64,18 @@ class SkillManager:
 
         return bool(skill_config.get("enabled", True))
 
-    def _register_skill(self, name: str, skill_cls: Type[BaseSkill]):
+    def _resolve_skill_class(self, name: str) -> Type[BaseSkill]:
+        skill_ref = self._skill_classes[name]
+        if not isinstance(skill_ref, str):
+            return skill_ref
+
+        module_name, class_name = skill_ref.split(":", 1)
+        module = import_module(module_name)
+        skill_cls = getattr(module, class_name)
+        self._skill_classes[name] = skill_cls
+        return skill_cls
+
+    def _register_skill(self, name: str, skill_cls: Union[Type[BaseSkill], str]):
         if not self._skill_enabled_in_config(name):
             logger.info(f"Skipping skill '{name}' because enabled=false in config.")
             return
@@ -78,7 +84,8 @@ class SkillManager:
             logger.warning(f"Skill '{name}' is already registered. Skipping duplicate registration.")
             return
 
-        self.skills[name] = skill_cls(name, self.config, self.context)
+        resolved_cls = self._resolve_skill_class(name)
+        self.skills[name] = resolved_cls(name, self.config, self.context)
 
     async def start(self):
         if self.running:
