@@ -121,3 +121,48 @@ def resolve_identity_text(text: str) -> str:
     if data.get("rules", {}).get("never_call_kyo_user", True):
         text = re.sub(r"\bthe user\b", "Kyo", text, flags=re.IGNORECASE)
     return text
+
+
+def normalize_actor_id(actor_id: str, source: str = "") -> str:
+    """Return a stable actor id without converting Kyo/Nan0 actions into each other."""
+    raw = str(actor_id or "").strip()
+    low = raw.lower()
+    src = str(source or "").lower()
+    if src.startswith("kyo") or low in {"kyo", "kayok", "kayo"}:
+        return "kyo"
+    if src in {"boot", "monologue", "proactive", "social_pressure", "vision_pressure"} or low in {"nan0", "nano"}:
+        return "nan0"
+    if "discord" in src:
+        return low or "discord_friend"
+    return low or "unknown"
+
+
+def actor_perspective_contract(actor_id: str, source: str = "") -> Dict[str, Any]:
+    """Small prompt-safe ownership contract for thought generation."""
+    stable = normalize_actor_id(actor_id, source)
+    if stable == "kyo":
+        return {
+            "source_actor_id": "kyo",
+            "display_name": "Kyo",
+            "actor_role": "Kyo is the one who spoke or acted.",
+            "nan0_role": "Nan0 is the observer/reactor, not the actor who did Kyo's action.",
+            "ownership_rule": "If Kyo says 'I watched/was/did', that action belongs to Kyo. Nan0 may react to it but must not remember it as Nan0 doing it.",
+            "pronouns": ["she", "her"],
+        }
+    if stable == "nan0":
+        return {
+            "source_actor_id": "nan0",
+            "display_name": "Nan0",
+            "actor_role": "Nan0 is the actor/source of this internal event.",
+            "nan0_role": "Nan0 may use I/me for this event.",
+            "ownership_rule": "Internal/boot/monologue actions belong to Nan0, not Kyo.",
+            "pronouns": ["she", "her"],
+        }
+    return {
+        "source_actor_id": stable,
+        "display_name": actor_id or stable or "unknown",
+        "actor_role": "This external actor spoke or acted.",
+        "nan0_role": "Nan0 is the observer/reactor unless the event explicitly says Nan0 acted.",
+        "ownership_rule": "Do not convert another actor's first-person statement into Nan0's memory or action.",
+        "pronouns": [],
+    }

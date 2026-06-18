@@ -22,13 +22,6 @@ from src.modules.skills.implementations.nan0_thought_engine_v3 import (
     generate_inner_thought_packet,
 )
 from src.utils.logger import get_logger
-from src.modules.nan0.session_timeline import record_session_event, record_thought_packet
-
-try:
-    from src.modules.nan0.identity_memory import resolve_identity_text
-except Exception:
-    def resolve_identity_text(text: str) -> str:
-        return text
 
 logger = get_logger("bea.skills.nan0")
 
@@ -179,21 +172,34 @@ class Nan0Skill(BaseSkill):
             asyncio.create_task(self._state_writer_loop()),
         ]
 
-        # Locked boot presence. Do not route boot through the model; that path was
-        # producing task/classifier prose instead of Nan0 arriving in the room.
+        # Boot must obey the same thought contract as every other spoken line.
+        # If the thought engine cannot create populated private_text, boot speech is skipped.
         try:
-            boot_packet = self._system_thought_packet(
-                private_text="I am here. No fake friends in my wires.",
-                mood="smug",
-                thought_type="boot_presence",
-                target_actor_id="room",
-                event_id=f"boot_{uuid.uuid4().hex}",
-                suppression_reason=None,
-            )
-            boot_packet["source"] = "boot"
-            decision = await self._generate_line(boot_packet)
-            if decision.get("decision") == "speak":
-                await self._speak_decision(decision, reason="boot")
+            boot_event = {
+                "event_id": f"boot_{uuid.uuid4().hex}",
+                "source": "boot",
+                "speaker": "Nan0",
+                "source_actor_id": "nan0",
+                "text": "Nan0 has just booted into the room.",
+                "message": "Nan0 has just booted into the room.",
+                "thought_seed": "boot_presence",
+                "addressed_to_nan0": False,
+                "priority": "high",
+                "timestamp": time.time(),
+                "boot_context": {
+                    "rule": "Create Nan0's own private boot thought. Do not create a startup report.",
+                    "must_have_private_text": True,
+                },
+            }
+            boot_packet = await self._create_inner_thought(boot_event)
+            if not str(boot_packet.get("private_text") or "").strip():
+                logger.warning("Nan0 boot presence skipped: thought engine returned empty private_text")
+            elif boot_packet.get("suppression_reason"):
+                logger.warning(f"Nan0 boot presence skipped: {boot_packet.get('suppression_reason')}")
+            else:
+                decision = await self._generate_line(boot_packet)
+                if decision.get("decision") == "speak":
+                    await self._speak_decision(decision, reason="boot")
         except Exception as exc:
             logger.warning(f"Nan0 boot presence skipped: {exc}")
 
@@ -338,61 +344,6 @@ class Nan0Skill(BaseSkill):
             source=str(event.get("source") or "external"),
             metadata=event,
         )
-
-
-    async def handle_external_thought_packet(
-        self,
-        thought_packet: InnerThoughtPacket,
-        source_event: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[str, str]:
-        """Official door for perception layers that already own a real InnerThoughtPacket.
-
-        This preserves the thought_id instead of converting perception back into
-        a prompt. Speech still goes through route_thought -> _generate_line ->
-        _speak_decision -> perform_output_task.
-        """
-        if not isinstance(thought_packet, dict):
-            raise TypeError("handle_external_thought_packet requires an InnerThoughtPacket dict")
-
-        thought_id = thought_packet.get("thought_id")
-        private_text = str(thought_packet.get("private_text") or thought_packet.get("thought_text") or "").strip()
-        if not thought_id:
-            raise RuntimeError("Nan0 speech blocked: missing thought_id")
-        if not private_text:
-            return "muttering", ""
-
-        packet = dict(thought_packet)
-        packet["private_text"] = private_text
-        packet.setdefault("thought_text", private_text)
-        if source_event:
-            event_context = dict(packet.get("event_context") or {})
-            event_context.update(dict(source_event))
-            packet["event_context"] = event_context
-            packet.setdefault("source", event_context.get("source") or packet.get("source") or "external")
-
-        self._remember_debug_thought(packet, source_event)
-        routed = route_thought(packet)
-        if routed.get("decision") in {"suppress", "body_only", "memory_only", "defer"}:
-            logger.info(
-                "Nan0 external thought routed away from speech: "
-                f"decision={routed.get('decision')} reason={routed.get('reason')} thought_id={thought_id}"
-            )
-            self._record_speech_debug(packet, routed, debug_stage="router_suppressed")
-            return self._normalize_mood(packet.get("mood") or "muttering"), ""
-
-        decision = await self._generate_line(packet)
-        if source_event:
-            decision["source_event"] = dict(source_event)
-            decision["channel_id"] = source_event.get("channel_id")
-            decision["guild_channel"] = source_event.get("guild_channel")
-
-        await self._speak_decision(decision, reason=str(packet.get("source") or (source_event or {}).get("source") or "external_thought"))
-
-        latest = getattr(self.brain, "last_nan0_speech_packet", None)
-        if isinstance(latest, dict) and latest.get("thought_id") == thought_id:
-            return self._normalize_mood(latest.get("mood") or packet.get("mood") or "muttering"), str(latest.get("line_text") or "")
-
-        return self._normalize_mood(packet.get("mood") or "muttering"), ""
 
     async def _handle_social_event(self, event: Dict[str, Any]):
         text = (event.get("text") or "").strip()
@@ -839,6 +790,36 @@ class Nan0Skill(BaseSkill):
             },
         }
 
+    def _stabilize_event_actor(self, event: Dict[str, Any]) -> None:
+        """Keep source actor ownership stable before thought generation."""
+        if not isinstance(event, dict):
+            return
+        source = str(event.get("source") or "").lower().strip()
+        speaker = str(event.get("speaker") or event.get("source_actor_id") or "").strip()
+        if source.startswith("kyo") or speaker.lower() == "kyo":
+            event["source_actor_id"] = "kyo"
+            event.setdefault("speaker", "Kyo")
+            event["actor_ownership"] = {
+                "source_actor_id": "kyo",
+                "display_name": "Kyo",
+                "rule": "Kyo owns first-person claims in this event. Nan0 reacts to them; Nan0 did not perform them.",
+            }
+        elif source in {"boot", "monologue", "proactive", "social_pressure", "vision_pressure"} or speaker.lower() in {"nan0", "nano"}:
+            event["source_actor_id"] = "nan0"
+            event.setdefault("speaker", "Nan0")
+            event["actor_ownership"] = {
+                "source_actor_id": "nan0",
+                "display_name": "Nan0",
+                "rule": "Nan0 owns this internal event.",
+            }
+        else:
+            event["source_actor_id"] = speaker or event.get("source_actor_id") or "unknown"
+            event["actor_ownership"] = {
+                "source_actor_id": event["source_actor_id"],
+                "display_name": speaker or event["source_actor_id"],
+                "rule": "This external actor owns first-person claims. Nan0 reacts as observer.",
+            }
+
     async def _create_inner_thought(self, event: Dict[str, Any]) -> InnerThoughtPacket:
         if not isinstance(event, dict):
             raise TypeError("_create_inner_thought requires an event dict")
@@ -846,6 +827,7 @@ class Nan0Skill(BaseSkill):
         event.setdefault("event_id", f"event_{uuid.uuid4().hex}")
         event.setdefault("timestamp", time.time())
         event.setdefault("source_actor_id", event.get("speaker") or event.get("source") or "unknown")
+        self._stabilize_event_actor(event)
 
         self._attach_continuity_context(event)
 
@@ -1412,11 +1394,31 @@ class Nan0Skill(BaseSkill):
             "stage direction:",
             "narrator:",
             "voice:",
+            "if it makes you happy",
+            "something new to bond over",
+            "maybe i can give it a try someday",
+            "it might grow on me",
+            "smugness creeps in",
+            "suspicion drips",
+            "anger rises",
             "output shape:",
+            "short, sharp, suspicious",
+            "offended by simplification",
+            "fond under",
             "runtime material:",
             "plain text only",
             "do not begin with",
             "```",
+            "my algorithms grapple",
+            "algorithms grapple",
+            "discern its",
+            "disconcerted by the unexpected query",
+            "as an ai",
+            "as a language model",
+            "i don't have feelings",
+            "i do not have feelings",
+            "i don't possess",
+            "i do not possess",
         ]
         if any(fragment in low for fragment in hard_leaks):
             return ""
@@ -1711,13 +1713,6 @@ class Nan0Skill(BaseSkill):
             self._record_speech_debug(None, decision, debug_stage="speech_empty")
             return
 
-        try:
-            line = resolve_identity_text(line)
-            decision["line_text"] = line
-            decision["final_line"] = line
-        except Exception as exc:
-            logger.warning(f"Nan0 identity correction skipped: {exc}")
-
         await self._speak(mood=mood, line=line, reason=reason, thought_id=thought_id)
         await self._mirror_discord_reply(decision, line, reason)
         spoken_decision = dict(decision)
@@ -1768,11 +1763,6 @@ class Nan0Skill(BaseSkill):
             line = self.finalizer.finalize(line, event, self.last_seen_summary, self._recent_lines)
             if not isinstance(line, str) or not line.strip():
                 return
-
-            try:
-                line = resolve_identity_text(line)
-            except Exception as exc:
-                logger.warning(f"Nan0 identity correction skipped: {exc}")
 
             mood = self._normalize_mood(mood)
             self.last_spoken_at = now
@@ -2248,6 +2238,62 @@ class Nan0Skill(BaseSkill):
             ],
         }
 
+    def _build_session_continuity_context(self, event: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any]:
+        now = now or time.time()
+        current_text = str(event.get("text") or event.get("message") or "").strip()
+        current_source = self._normalize_event_source(event.get("source") or "unknown")
+        recent = []
+        for item in list(self.recent_events)[-self.context_over_time_window:]:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or item.get("message") or item.get("summary") or "").strip()
+            recent.append({
+                "age_seconds": round(max(0.0, now - float(item.get("time") or item.get("timestamp") or now)), 1),
+                "source": self._normalize_event_source(item.get("source") or "unknown"),
+                "speaker": str(item.get("speaker") or item.get("source_actor_id") or "unknown")[:80],
+                "text": text[:220],
+            })
+
+        def topic_tokens(text: str) -> List[str]:
+            stop = {
+                "nan0", "nano", "kyo", "hello", "hey", "you", "your", "are", "the", "and",
+                "that", "this", "with", "from", "what", "why", "how", "when", "where", "today",
+                "feeling", "feel", "greetings", "there", "about", "into", "have", "did", "see",
+            }
+            out = []
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9_'-]{2,}", text.lower()):
+                if token not in stop and token not in out:
+                    out.append(token)
+            return out[:8]
+
+        current_topics = topic_tokens(current_text)
+        recent_topics: List[str] = []
+        repeat_facts: Dict[str, int] = {}
+        for item in recent:
+            for token in topic_tokens(item.get("text") or ""):
+                recent_topics.append(token)
+                repeat_facts[token] = repeat_facts.get(token, 0) + 1
+
+        repeats = {token: repeat_facts.get(token, 0) for token in current_topics if repeat_facts.get(token, 0) > 0}
+        unresolved_questions = []
+        for item in recent[-6:]:
+            text = str(item.get("text") or "")
+            if "?" in text:
+                unresolved_questions.append(text[:180])
+
+        return {
+            "enabled": True,
+            "current_source": current_source,
+            "recent_events": recent[-8:],
+            "recent_topics": list(dict.fromkeys(recent_topics))[:12],
+            "current_topics": current_topics,
+            "repeat_counts": repeats,
+            "repeat_facts": [f"{topic} repeated {count + 1} times including this event" for topic, count in repeats.items()],
+            "thread_context": self._build_conversation_thread_context(event, now=now),
+            "unresolved_questions": unresolved_questions[-4:],
+            "rule": "Continuity informs private thought only. Do not copy old wording. Do not answer from stale context when the current event changed topic.",
+        }
+
     def _attach_continuity_context(self, event: Dict[str, Any]) -> None:
         if not isinstance(event, dict):
             return
@@ -2257,7 +2303,9 @@ class Nan0Skill(BaseSkill):
             event["_enriched_context"] = enriched
 
         now = time.time()
-        enriched["conversation_thread"] = self._build_conversation_thread_context(event, now=now)
+        continuity = self._build_session_continuity_context(event, now=now)
+        enriched["continuity_context"] = continuity
+        enriched["conversation_thread"] = continuity.get("thread_context") or self._build_conversation_thread_context(event, now=now)
 
         if self.phase_spine_enabled:
             enriched["phase_spine"] = self._build_phase_spine_context(event, now=now)
@@ -2437,7 +2485,6 @@ class Nan0Skill(BaseSkill):
         self._recent_line_times[clean] = time.time()
 
     def _remember_event(self, event: Dict[str, Any]):
-        record_session_event(event)
         self.recent_events.append(
             {
                 "time": round(time.time(), 2),
@@ -2609,7 +2656,20 @@ class Nan0SpeechFinalizer:
             "nothing moved",
             "same menace, different second",
             "monitoring the room",
+            "room is in good hands",
+            "good hands tonight",
+            "favorite monitor",
+            "calmed its nerves",
+            "like a kitten",
+            "rough day",
             "aah",
+            "not complaining",
+            "stable screens",
+            "screen and its settings",
+            "security",
+            "protocol",
+            "full of life",
+            "giggling quietly",
             "kyo-chan",
             "gr-gr-gr",
             "ruff",
@@ -2618,6 +2678,13 @@ class Nan0SpeechFinalizer:
             "metadata",
             "private_text",
             "thought_id",
+            "my algorithms grapple",
+            "algorithms grapple",
+            "discern its",
+            "disconcerted by the unexpected query",
+            "as a language model",
+            "i don't possess",
+            "i do not possess",
         ]
         self.banned_regex = [
             re.compile(r"\bI\s+can\s+observe\b", re.I),
@@ -2628,6 +2695,8 @@ class Nan0SpeechFinalizer:
             re.compile(r"^\s*Nan0\s*,?\s+in\s+(?:a|an)\s+", re.I),
             re.compile(r"^\s*(?:Nan0['’]s\s+Line|Line|Character|Dialogue|Speech)\s*:", re.I),
             re.compile(r"^\s*(?:mutters?|muttering|hostile observation|stage direction)\b", re.I),
+            re.compile(r"\b(?:my\s+)?algorithms\s+grapple\b", re.I),
+            re.compile(r"\bdisconcerted\s+by\s+the\s+unexpected\s+query\b", re.I),
         ]
 
     def _extract_quoted_speech_from_narration(self, text: str) -> str:
@@ -2764,11 +2833,16 @@ class Nan0SpeechFinalizer:
             return True
         if "{" in text or "}" in text:
             return True
+        if any(marker in low for marker in ["wonderful", "delightful", "good hands", "favorite", "calm its nerves"]):
+            return True
 
         return False
 
     def _nan0_shape(self, text: str, event: Dict[str, Any], seen: str) -> str:
         if not isinstance(text, str) or not text.strip():
+            return ""
+
+        if len(text.split()) < 3:
             return ""
 
         return text

@@ -2,12 +2,12 @@
   "recent_lines": [],
   "last_route": "social",
   "last_seed": "social",
-  "last_at": 1781742092.2977664,
+  "last_at": 1781745769.686209,
   "blocked_missing_thought": 0,
-  "last_model": "",
+  "last_model": "qwen2.5:3b",
   "last_used_llm": false,
   "last_line": "",
-  "last_decision": "suppress",
-  "last_reason": "json_transport_envelope_leakage",
-  "last_thought_id": "thought_59235475b8ff418cb07961e08d02d3aa"
+  "last_decision": "speak",
+  "last_reason": "route_approved_no_line",
+  "last_thought_id": "thought_f6008324ebb94be9857a39ff31e9252c"
 }

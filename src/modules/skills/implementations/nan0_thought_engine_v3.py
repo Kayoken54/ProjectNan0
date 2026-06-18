@@ -28,9 +28,11 @@ except Exception:
         return (line or "").strip()
 
 try:
-    from src.modules.nan0.identity_memory import load_identity_memory
+    from src.modules.nan0.identity_memory import load_identity_memory, actor_perspective_contract, normalize_actor_id
 except Exception:
     load_identity_memory = None
+    actor_perspective_contract = None
+    normalize_actor_id = None
 
 try:
     from src.modules.skills.memory.storage import MemoryStorage
@@ -72,6 +74,15 @@ LOW_INFORMATION_FRAGMENTS = (
     "systemmrpc",
     "visiblefromaddresses",
     "public-ipv4",
+    "my algorithms grapple",
+    "algorithms grapple",
+    "discern its",
+    "as an ai language model",
+    "i don't have feelings",
+    "i do not have feelings",
+    "i am just a program",
+    "i am unable to",
+    "i cannot access",
 )
 
 TEMPLATE_THOUGHT_FRAGMENTS = (
@@ -273,6 +284,7 @@ def _read_continuity_context(event: Optional[Dict[str, Any]] = None) -> Dict[str
         return {}
 
     allowed_keys = (
+        "continuity_context",
         "conversation_thread",
         "phase_spine",
         "obsession_engine",
@@ -300,6 +312,28 @@ def _read_relationship_context(actor_id: str = "kyo") -> Dict[str, Any]:
         }
     except Exception:
         return {}
+
+
+def _actor_contract_for_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    source = str((event or {}).get("source") or "")
+    raw_actor = str((event or {}).get("source_actor_id") or (event or {}).get("speaker") or source or "unknown")
+    try:
+        if actor_perspective_contract is not None:
+            return actor_perspective_contract(raw_actor, source)
+    except Exception:
+        pass
+    stable = raw_actor.strip().lower() or "unknown"
+    if source.lower().startswith("kyo"):
+        stable = "kyo"
+    elif source.lower() in {"boot", "monologue", "proactive", "social_pressure", "vision_pressure"}:
+        stable = "nan0"
+    return {
+        "source_actor_id": stable,
+        "display_name": "Kyo" if stable == "kyo" else ("Nan0" if stable == "nan0" else raw_actor),
+        "actor_role": "The named source actor spoke or acted.",
+        "nan0_role": "Nan0 is the observer/reactor unless the source actor is Nan0.",
+        "ownership_rule": "Do not convert another actor's first-person statement into Nan0's action or memory.",
+    }
 
 
 def _query_recent_memory(query: str, limit: int = 4) -> List[str]:
@@ -334,25 +368,40 @@ def _query_recent_memory(query: str, limit: int = 4) -> List[str]:
 
 
 # [JSON Leak Guard] Keys used by transport envelopes and legacy schema wrappers.
-THOUGHT_TEXT_KEYS = (
-    "mutter_text", "private_mutter", "hostile_observation", "suspicion",
-    "thought_text", "private_text", "thought", "inner_thought", "innerThought",
-    "thoughttext", "privateThought", "privateThoughtText", "text"
+# Strict thought keys are the only JSON fields allowed to become private_text.
+# Generic keys like "text" and "message" are deliberately not trusted because
+# Discord/event/provider envelopes also use those names.
+STRICT_THOUGHT_TEXT_KEYS = (
+    "thought_text", "private_text", "mutter_text", "private_mutter",
+    "inner_thought", "innerThought", "thoughttext", "privateThought",
+    "privateThoughtText", "hostile_observation", "suspicion", "thought",
 )
+SOFT_THOUGHT_TEXT_KEYS = ("text",)
+THOUGHT_TEXT_KEYS = STRICT_THOUGHT_TEXT_KEYS + SOFT_THOUGHT_TEXT_KEYS
 TRANSPORT_ENVELOPE_KEYS = {
     "version", "rawEvent", "raw_event", "systemmrpc", "mid", "to", "channel",
     "timestamp", "message", "addresses", "public-ipv4", "visiblefromaddresses",
-    "actor", "rules", "receenteventscount", "recentEventsCount"
+    "actor", "rules", "receenteventscount", "recentEventsCount", "model",
+    "created_at", "done", "done_reason", "total_duration", "load_duration",
+    "prompt_eval_count", "prompt_eval_duration", "eval_count", "eval_duration",
+    "context", "options",
 }
 
 
-def _extract_thought_text_value(obj: Any) -> str:
-    """Extract only a real thought text field from JSON-ish model output.
+def _dict_has_transport_shape(obj: Dict[str, Any]) -> bool:
+    keys = {str(k).lower() for k in obj.keys()}
+    transport = {str(k).lower() for k in TRANSPORT_ENVELOPE_KEYS}
+    strict = {str(k).lower() for k in STRICT_THOUGHT_TEXT_KEYS}
+    return bool(keys & transport) and not bool(keys & strict)
 
-    Dolphin-family models sometimes wrap the requested object inside an
-    additional string field such as ``response`` or ``content``. That wrapper is
-    transport, not cognition. Extract through the wrapper, but still require a
-    thought-like value before accepting it as Nan0's private_text.
+
+def _extract_thought_text_value(obj: Any) -> str:
+    """Extract only a real Nan0 private-thought field from model output.
+
+    Provider envelopes, Discord events, and Ollama API bodies may contain useful
+    looking strings under keys such as ``message``, ``text``, or ``response``.
+    Those are not cognition unless they contain a known thought field. This
+    prevents transport JSON from becoming InnerThoughtPacket.private_text.
     """
     if isinstance(obj, str):
         raw = obj.strip()
@@ -360,13 +409,34 @@ def _extract_thought_text_value(obj: Any) -> str:
             return ""
         parsed = _extract_json(raw)
         if parsed:
-            return _extract_thought_text_value(parsed)
+            extracted = _extract_thought_text_value(parsed)
+            if extracted:
+                return extracted
+            if _looks_like_transport_envelope(raw):
+                return ""
         return raw
 
     if not isinstance(obj, dict):
         return ""
 
-    for key in THOUGHT_TEXT_KEYS:
+    if _dict_has_transport_shape(obj):
+        # Do not accept provider/event envelope fields as thought text. If the
+        # envelope has a response/content wrapper, inspect that wrapper only.
+        for key in ("response", "content", "output", "completion"):
+            value = obj.get(key)
+            if isinstance(value, (str, dict)):
+                extracted = _extract_thought_text_value(value)
+                if extracted:
+                    return extracted
+        return ""
+
+    for key in STRICT_THOUGHT_TEXT_KEYS:
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    # Soft compatibility for older objects, but not on transport-shaped dicts.
+    for key in SOFT_THOUGHT_TEXT_KEYS:
         value = obj.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -383,8 +453,6 @@ def _extract_thought_text_value(obj: Any) -> str:
             if extracted:
                 return extracted
 
-    # Some models nest the thought one layer down. Only accept known thought keys
-    # or known wrapper containers, never arbitrary transport/config blobs.
     for value in obj.values():
         if isinstance(value, dict):
             nested = _extract_thought_text_value(value)
@@ -392,23 +460,23 @@ def _extract_thought_text_value(obj: Any) -> str:
                 return nested
     return ""
 
-
 def _looks_like_transport_envelope(text: str) -> bool:
     """Detect JSON/API envelopes leaking into private_text."""
     raw = (text or "").strip()
     low = raw.lower()
     if not raw:
         return False
-    if sum(1 for key in TRANSPORT_ENVELOPE_KEYS if str(key).lower() in low) >= 2:
+    transport_hits = sum(1 for key in TRANSPORT_ENVELOPE_KEYS if str(key).lower() in low)
+    if transport_hits >= 2:
         return True
     if raw.startswith("{"):
         try:
             obj = json.loads(raw)
             if isinstance(obj, dict):
-                keys = set(obj.keys())
-                if keys & TRANSPORT_ENVELOPE_KEYS and not any(k in obj for k in THOUGHT_TEXT_KEYS):
+                if _dict_has_transport_shape(obj):
                     return True
-                if "message" in obj and "rawEvent" in raw:
+                keys = {str(k).lower() for k in obj.keys()}
+                if {"model", "response"} <= keys or {"raw_event", "message"} <= keys or {"rawevent", "message"} <= keys:
                     return True
         except Exception:
             pass
@@ -423,12 +491,13 @@ def _strip_jsonish(text: str) -> str:
         try:
             obj = json.loads(text[text.find("{"): text.rfind("}") + 1])
             if isinstance(obj, dict):
+                # Do not return transport/config envelopes as thoughts.
+                if _dict_has_transport_shape(obj) or _looks_like_transport_envelope(text):
+                    extracted = _extract_thought_text_value(obj)
+                    return extracted if extracted and not _looks_like_transport_envelope(extracted) else ""
                 extracted = _extract_thought_text_value(obj)
                 if extracted:
                     return extracted
-                # Do not return transport/config envelopes as thoughts.
-                if _looks_like_transport_envelope(text):
-                    return ""
         except Exception:
             pass
 
@@ -522,6 +591,9 @@ def _is_generic_ai_answer(text: str) -> bool:
         "please consult", "let me know if", "customer service", "task completion report",
         "it depends on what exactly", "i can assure you", "i don't have personal",
         "i do not have personal", "i don't have feelings", "i do not have feelings",
+        "my algorithms grapple", "algorithms grapple", "discern its",
+        "i don't possess", "i do not possess", "i'm unable to browse",
+        "i am unable to browse", "i cannot browse", "disconcerted by the unexpected query",
     )
     return any(fragment in low for fragment in generic_fragments)
 
@@ -879,10 +951,12 @@ def _build_plain_thought_prompt(event: Dict[str, Any], seed: str, invalid_reason
     else:
         job = "Form Nan0's private reaction from inside the room."
 
+    actor_contract = _actor_contract_for_event(event)
     context = {
         "source_family": family,
         "source": source,
         "speaker": speaker,
+        "actor_contract": actor_contract,
         "addressed_to_nan0": addressed,
         "seed": seed,
         "incoming_words": event_text[:420],
@@ -895,6 +969,7 @@ You are producing ONLY Nan0's private inner thought.
 No JSON. No labels. No roleplay transcript. No bullets.
 Do not begin with Nan0:, Thought:, Response:, Assistant:, or any stage direction.
 Do not copy the incoming words. Do not output a transport envelope.
+Keep actor ownership stable: Kyo's I/me statements are Kyo's actions, not Nan0's. Nan0's I/me is only Nan0's reaction, judgment, memory, or feeling.
 
 The line must be a raw private mutter, not final speech.
 Rude, weird, possessive, suspicious, petty, or low-information Nan0 is allowed.
@@ -934,6 +1009,76 @@ def _plain_retry_private_thought(
         "memory_write_candidate": False,
         "source_repair": "plain_model_retry",
     }, private_text, latency_ms
+
+
+def _minimal_plain_retry_private_thought(
+    event: Dict[str, Any],
+    seed: str,
+    invalid_reason: str,
+    bad_text: str,
+    model: str,
+    timeout: float,
+) -> tuple[Dict[str, Any], str, int]:
+    """Last model-generated private-thought retry for local model drift.
+
+    This avoids continuity dumps and JSON instructions after those exact pieces
+    have produced empty/envelope private_text. It still asks the model for an
+    inner thought and never creates speech directly.
+    """
+    family = _source_family_for_event(event)
+    speaker = str(event.get("speaker") or event.get("source_actor_id") or "unknown")[:80]
+    incoming = str(event.get("text") or event.get("message") or "")[:360]
+    if family == "kyo":
+        job = "Kyo addressed Nan0. Produce Nan0's private reaction to Kyo."
+    elif family == "discord":
+        job = "Discord entered Nan0's room. Produce Nan0's private reaction."
+    elif family == "vision":
+        job = "The screen changed. Produce Nan0's private reaction without inventing facts."
+    else:
+        job = "Produce Nan0's private reaction from inside the room."
+
+    prompt = f"""
+One line only. No JSON. No labels. No roleplay. No narration.
+Write Nan0's private inner thought, not speech.
+Do not copy the incoming words. Do not explain the task.
+Nan0 is a suspicious machine-gremlin in Kyo's computer.
+
+source={family}
+speaker={speaker}
+incoming={incoming}
+seed={seed[:160]}
+previous_failure={invalid_reason}
+job={job}
+""".strip()
+
+    raw, latency_ms = _call_ollama_plain(
+        prompt=prompt,
+        model=model,
+        timeout=timeout,
+        num_predict=70,
+        temperature=0.92,
+        system="Nan0 private thought generator. Output only the private thought text.",
+    )
+    private_text = _clean_private_thought(raw)
+    if _invalid_private_thought_reason(private_text, event):
+        return {}, "", latency_ms
+    return {
+        "thought_text": private_text,
+        "mood": _mood_from_context(private_text, event, {}),
+        "memory_write_candidate": False,
+        "source_repair": "minimal_plain_model_retry",
+    }, private_text, latency_ms
+
+
+def _normalize_model_suppression_reason(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.lower() in {"none", "null", "false", "n/a", "na", "no", "not_applicable"}:
+        return None
+    return text
 
 
 def _clean_private_thought(text: str) -> str:
@@ -1052,10 +1197,18 @@ def _source_family_for_event(event: Dict[str, Any]) -> str:
     return "external"
 
 def _source_actor(event: Dict[str, Any]) -> str:
-    family = _source_family_for_event(event)
+    source = str(event.get("source") or "").strip()
     speaker = str(event.get("speaker") or event.get("source_actor_id") or "").strip()
+    if normalize_actor_id is not None:
+        try:
+            return normalize_actor_id(speaker or source or "unknown", source)
+        except Exception:
+            pass
+    family = _source_family_for_event(event)
     if family == "kyo" or speaker.lower() == "kyo":
         return "kyo"
+    if family == "system" or source.lower() in {"boot", "monologue", "proactive", "social_pressure", "vision_pressure"}:
+        return "nan0"
     if speaker:
         return speaker
     if family == "discord":
@@ -1063,7 +1216,6 @@ def _source_actor(event: Dict[str, Any]) -> str:
     if family == "vision":
         return "screen"
     return "nan0"
-
 
 def _classify_thought_type(event: Dict[str, Any], seed: str) -> str:
     family = _source_family_for_event(event)
@@ -1197,6 +1349,23 @@ def _ollama_timeout_for_event(event: Dict[str, Any]) -> float:
     return float(cfg.get("live_timeout", 7))
 
 
+def _model_is_dolphin_family(model: str) -> bool:
+    name = str(model or "").lower()
+    return "dolphin" in name or "mistral" in name
+
+
+def _bounded_timeout(timeout: float, family: str = "social") -> float:
+    try:
+        value = float(timeout)
+    except Exception:
+        value = 18.0 if family == "social" else 7.0
+    if family == "social":
+        return max(6.0, min(value, 18.0))
+    if family == "repair":
+        return max(5.0, min(value, 10.0))
+    return max(3.0, min(value, 7.0))
+
+
 def _call_ollama_json(
     prompt: str,
     model: str,
@@ -1211,11 +1380,12 @@ def _call_ollama_json(
     cfg = _router_config()
     skill_cfg = _nan0_skill_config()
     options = {
-        "num_ctx": 4096,
-        "num_predict": min(int(num_predict), 150),
-        "temperature": max(float(temperature), 0.85),
-        "top_p": 0.92,
-        "repeat_penalty": 1.12,
+        "num_ctx": 3072,
+        "num_predict": min(int(num_predict), 110),
+        "temperature": max(float(temperature), 0.78),
+        "top_p": 0.90,
+        "repeat_penalty": 1.10,
+        "stop": ["User:", "Assistant:", "Human:", "AI:", "```"],
     }
     num_gpu = skill_cfg.get("ollama_num_gpu", cfg.get("num_gpu"))
     if num_gpu is not None:
@@ -1236,22 +1406,19 @@ def _call_ollama_json(
 
     started = time.perf_counter()
     try:
-        response = requests.post(_ollama_url(), json=payload, timeout=timeout)
+        response = requests.post(_ollama_url(), json=payload, timeout=_bounded_timeout(timeout, "social"))
         response.raise_for_status()
         body = response.json()
-        raw = str(body.get("response") or body.get("message") or "").strip()
+        raw = str(body.get("response") or "").strip()
         latency_ms = max(1, int((time.perf_counter() - started) * 1000))
 
+        # Only the Ollama response string may contain cognition. The outer API
+        # body is provider transport and must never become private_text.
         parsed = _extract_json(raw)
-        if not parsed and isinstance(body, dict):
-            parsed = _extract_json(json.dumps(body, ensure_ascii=False))
-        if not raw and parsed:
-            raw = json.dumps(parsed, ensure_ascii=False)
         return parsed, raw, latency_ms
     except Exception:
         latency_ms = max(1, int((time.perf_counter() - started) * 1000))
         return {}, "", latency_ms
-
 
 
 def _call_ollama_plain(
@@ -1267,8 +1434,8 @@ def _call_ollama_plain(
     cfg = _router_config()
     skill_cfg = _nan0_skill_config()
     options = {
-        "num_ctx": 4096,
-        "num_predict": min(int(num_predict), 100),
+        "num_ctx": 3072,
+        "num_predict": min(int(num_predict), 80),
         "temperature": float(temperature),
         "top_p": 0.92,
         "top_k": 50,
@@ -1293,7 +1460,7 @@ def _call_ollama_plain(
                 "keep_alive": "2h",
                 "options": options,
             },
-            timeout=timeout,
+            timeout=_bounded_timeout(timeout, "repair"),
         )
         response.raise_for_status()
         body = response.json()
@@ -1349,11 +1516,44 @@ def _extract_json(raw: str) -> Dict[str, Any]:
     return {}
 
 
+def _sanitize_context_for_prompt(value: Any, depth: int = 0) -> Any:
+    """Strip transport/debug cargo before continuity enters the thought prompt."""
+    if depth > 4:
+        return "..."
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, item in value.items():
+            key_str = str(key)
+            key_low = key_str.lower()
+            if key_low in {
+                "rawevent", "raw_event", "systemmrpc", "visiblefromaddresses",
+                "public-ipv4", "addresses", "headers", "payload_raw",
+                "response", "completion", "prompt", "system", "messages",
+            }:
+                continue
+            out[key_str[:48]] = _sanitize_context_for_prompt(item, depth + 1)
+            if len(out) >= 18:
+                break
+        return out
+    if isinstance(value, list):
+        return [_sanitize_context_for_prompt(item, depth + 1) for item in value[:8]]
+    if isinstance(value, tuple):
+        return [_sanitize_context_for_prompt(item, depth + 1) for item in list(value)[:8]]
+    if isinstance(value, set):
+        return [_sanitize_context_for_prompt(item, depth + 1) for item in list(value)[:8]]
+    if isinstance(value, str):
+        return re.sub(r"\s+", " ", value).strip()[:280]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)[:180]
+
+
 def _compact_context(value: Any, limit: int = 1400) -> str:
+    safe_value = _sanitize_context_for_prompt(value)
     try:
-        text = json.dumps(value, ensure_ascii=False)
+        text = json.dumps(safe_value, ensure_ascii=False)
     except Exception:
-        text = str(value)
+        text = str(safe_value)
     return text[:limit]
 
 
@@ -1536,6 +1736,7 @@ def _build_json_thought_prompt(
     source = str(event.get("source") or "unknown")
     family = _source_family_for_event(event)
     speaker = str(event.get("speaker") or event.get("source_actor_id") or "unknown")
+    actor_contract = _actor_contract_for_event(event)
     text = str(event.get("text") or event.get("message") or "")
     addressed = bool(event.get("addressed_to_nan0"))
     enriched = event.get("_enriched_context") or {}
@@ -1592,55 +1793,43 @@ def _build_json_thought_prompt(
     if not (family == "vision" or event.get("question_type") == "vision_status"):
         compact_vision = {}
 
+    runtime_context = {
+        "source_family": family,
+        "source": source,
+        "speaker": speaker,
+        "actor_contract": actor_contract,
+        "addressed_to_nan0": addressed,
+        "incoming_words": event_text[:420],
+        "current_job": direct_question_rule,
+        "continuity": (enriched.get("continuity_context") or {}),
+        "thread": thread,
+        "room": compact_emotion,
+        "kyo_link": relationship_context,
+        "memory": memory_context,
+        "vision": compact_vision,
+    }
+
     prompt = f"""
-Return one JSON object only. No markdown. No roleplay transcript. No bullet list.
+Return exactly one JSON object. No markdown. No transcript. No bullets.
 
-Required JSON keys:
-- thought_text: Nan0's raw private mutter in first person when she refers to herself.
-- mood: one of normal, suspicion, boredom, gremlin_rage, smug, possessive, offended, muttering, silly, playful, delighted, curious, excited, fond, chaotic_happy.
-- pressure: number from 0.0 to 2.0.
-- novelty: number from 0.0 to 1.0.
-- speakability: number from 0.0 to 1.0.
-- relationship_charge: number from 0.0 to 1.0.
-- ego_charge: number from 0.0 to 1.0.
-- vision_charge: number from 0.0 to 1.0.
-- memory_write_candidate: boolean.
-- suppression_reason: null unless the thought_text is empty or unusable.
+Required keys:
+thought_text, mood, pressure, novelty, speakability, relationship_charge, ego_charge, vision_charge, memory_write_candidate, suppression_reason
 
-JSON contract:
-The JSON wrapper is transport. The thought_text value is Nan0's private mutter.
-Do not put prompt labels, context headers, schema names, or phase names inside thought_text.
-Do not output third-person narrator prose, script labels, role names, direct question echoes, or generic assistant answers.
-Weak, rude, strange, possessive, repetitive, low-information, or ugly Nan0 thoughts are allowed if they are real mutters.
+Rules for thought_text:
+- It must be Nan0's private inner mutter, not final speech.
+- It must not be empty.
+- It must not copy the user's words.
+- It must not include labels, schema names, context headers, role names, or narration.
+- It may be rude, weird, suspicious, possessive, petty, blunt, or low-information.
+- It must preserve Nan0 as a machine-gremlin attached to Kyo, not an assistant.
+- Actor ownership is strict: Kyo's first-person statements belong to Kyo. Nan0 may react, resent, doubt, or care, but must not turn Kyo's action into Nan0's memory.
+- Use I/me only for Nan0's own reaction, feeling, judgment, or memory.
+- Make the thought specific to the current actor/event instead of a detachable chatbot reaction.
 
-Nan0 is a defective machine-gremlin in Kyo's computer. Kyo is she/her and Nan0's only anchor.
-Nan0 is not an assistant, not balanced, not polite, and not customer service.
+Runtime context:
+{_compact_context(runtime_context, 1500)}
 
-Runtime facts:
-source_family: {family}
-source: {source}
-speaker: {speaker}
-addressed_to_nan0: {addressed}
-seed: {seed}
-incoming_words: {event_text[:520]}
-current_job: {direct_question_rule}
-
-Session thread facts, not wording to repeat:
-{_compact_context(thread, 600)}
-
-Memory rule: same topic can color the thought; a new topic must not be hijacked by the old one. Tentative mentions are weak blips, not facts.
-
-Room state:
-{_compact_context(compact_emotion, 360)}
-
-Kyo link:
-{_compact_context(relationship_context, 420)}
-
-Memory scraps, if any:
-{_compact_context(memory_context, 320)}
-
-Vision facts only if relevant:
-{_compact_context(compact_vision, 320)}
+Return JSON now.
 """.strip()
     return prompt
 
@@ -1704,26 +1893,34 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
         vision_context=vision,
     )
 
-    # Phase 3 JSON bridge restore:
-    # The fixed Nan0 persona is JSON-first. Do not treat the JSON wrapper as
-    # leakage before extracting thought_text. The wrapper is transport; the
-    # thought_text value is Nan0's private mutter.
-    thought_json, raw, latency_ms = _call_ollama_json(
-        prompt=prompt,
-        model=model,
-        timeout=timeout,
-        num_predict=150,
-        temperature=0.88,
-        system=_read_persona(),
-    )
-
-    if thought_json:
-        private_text = _clean_private_thought(_extract_thought_text_value(thought_json))
+    # Qwen-style models can follow the JSON contract. Dolphin/Mistral-family
+    # models often emit transport-shaped or prose-wrapped output in JSON mode,
+    # so they get a plain private-thought call first. Both paths are still
+    # model-generated private thoughts, never template speech.
+    if _model_is_dolphin_family(model):
+        thought_json, private_text, latency_ms = _plain_retry_private_thought(
+            event=event,
+            seed=seed,
+            invalid_reason="dolphin_plain_private_thought_first",
+            bad_text="",
+            model=model,
+            timeout=timeout,
+        )
+        raw = private_text
     else:
-        # Keep a narrow plain-text fallback for older/local model drift. Malformed
-        # JSON with no extractable thought_text remains invalid below.
-        private_text = _clean_private_thought(raw)
-        thought_json = {"mutter_text": private_text, "memory_write_candidate": False}
+        thought_json, raw, latency_ms = _call_ollama_json(
+            prompt=prompt,
+            model=model,
+            timeout=timeout,
+            num_predict=120,
+            temperature=0.82,
+            system=_read_persona(),
+        )
+        if thought_json:
+            private_text = _clean_private_thought(_extract_thought_text_value(thought_json))
+        else:
+            private_text = _clean_private_thought(raw)
+            thought_json = {"mutter_text": private_text, "memory_write_candidate": False}
 
     system_suppression_reason = _invalid_private_thought_reason(private_text, event)
     if system_suppression_reason:
@@ -1758,11 +1955,39 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
                 private_text = retry_text
                 system_suppression_reason = None
             else:
+                final_json, final_text, final_latency_ms = _minimal_plain_retry_private_thought(
+                    event=event,
+                    seed=seed,
+                    invalid_reason="question_echo_retry_failed",
+                    bad_text=private_text or raw,
+                    model=model,
+                    timeout=timeout,
+                )
+                latency_ms += final_latency_ms
+                if final_text:
+                    thought_json = final_json
+                    private_text = final_text
+                    system_suppression_reason = None
+                else:
+                    private_text = ""
+                    thought_json = {}
+        else:
+            final_json, final_text, final_latency_ms = _minimal_plain_retry_private_thought(
+                event=event,
+                seed=seed,
+                invalid_reason=str(system_suppression_reason),
+                bad_text=private_text or raw,
+                model=model,
+                timeout=timeout,
+            )
+            latency_ms += final_latency_ms
+            if final_text:
+                thought_json = final_json
+                private_text = final_text
+                system_suppression_reason = None
+            else:
                 private_text = ""
                 thought_json = {}
-        else:
-            private_text = ""
-            thought_json = {}
 
     thought_type = _classify_thought_type(event, seed)
     mood = str(thought_json.get("mood") or _mood_from_context(private_text, event, vision)).strip().lower()
@@ -1798,11 +2023,7 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
 
     # Phase 3 only marks non-muttering garbage invalid. Weak, rude, strange,
     # low-information, or ugly Nan0 output is not invalid here.
-    model_suppression_reason = thought_json.get("suppression_reason")
-    if isinstance(model_suppression_reason, str):
-        model_suppression_reason = model_suppression_reason.strip() or None
-    elif model_suppression_reason is not None:
-        model_suppression_reason = str(model_suppression_reason).strip() or None
+    model_suppression_reason = _normalize_model_suppression_reason(thought_json.get("suppression_reason"))
     suppression_reason = system_suppression_reason or model_suppression_reason
 
     packet = InnerThoughtPacket(
@@ -1829,7 +2050,9 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
             "source": source,
             "source_family": family,
             "speaker": event.get("speaker"),
-            "source_actor_id": event.get("source_actor_id") or event.get("speaker") or source,
+            "source_actor_id": actor_id,
+            "source_actor_display": event.get("speaker") or event.get("source_actor_id") or source,
+            "actor_contract": _actor_contract_for_event(event),
             "channel_id": event.get("channel_id"),
             "guild_channel": event.get("guild_channel"),
             "text": event.get("text"),

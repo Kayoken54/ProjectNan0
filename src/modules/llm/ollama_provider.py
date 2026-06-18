@@ -118,7 +118,13 @@ class OllamaLLM(LLMInterface):
         low = text.lower()
         if low.startswith(("sure,", "of course", "certainly", "here is", "here are")):
             return ""
-        if any(bad in low for bad in ["how can i help", "as an ai", "continue with your thoughts"]):
+        if any(bad in low for bad in [
+            "how can i help", "as an ai", "as a language model",
+            "continue with your thoughts", "my algorithms grapple",
+            "algorithms grapple", "discern its",
+            "disconcerted by the unexpected query", "i don't possess",
+            "i do not possess",
+        ]):
             return ""
 
         return text
@@ -169,18 +175,24 @@ class OllamaLLM(LLMInterface):
             "stream": False,
             "keep_alive": "2h",
             "options": {
-                "num_ctx": 4096,
-                "num_predict": min(int(num_predict), 150),
-                "temperature": max(float(temperature), 0.85),
-                "top_p": 0.92,
-                "repeat_penalty": 1.12,
+                "num_ctx": 3072,
+                "num_predict": min(int(num_predict), 110),
+                "temperature": max(float(temperature), 0.78),
+                "top_p": 0.90,
+                "repeat_penalty": 1.10,
+                "stop": ["User:", "Assistant:", "Human:", "AI:", "```"],
             },
         }
 
         if json_hint:
             payload["format"] = "json"
 
-        response = requests.post(self.generate_url, json=payload, timeout=timeout or self.timeout)
+        call_timeout = timeout if timeout is not None else self.timeout
+        try:
+            call_timeout = max(3.0, min(float(call_timeout), 18.0))
+        except Exception:
+            call_timeout = 18.0
+        response = requests.post(self.generate_url, json=payload, timeout=call_timeout)
         response.raise_for_status()
         return response.json().get("response", "")
 

@@ -15,7 +15,7 @@ except Exception:
 
 CONFIG_PATH = Path("config.json")
 STATE_PATH = Path("data/nan0_cognition_router_state.json")
-VISION_STATE_PATH = Path("data/vision/nan0_vision_stack_state.json")
+VISION_STATE_DEFAULT_PATH = Path("data/vision/nan0_vision_stack_state.json")
 SPEECH_DEBUG_DEFAULT_PATH = Path("data/nan0/speech_debug.jsonl")
 
 
@@ -42,6 +42,13 @@ BANNED_SPEECH_FRAGMENTS = [
     "thought_packet",
     "private_text",
     "source_thought_id",
+    "my algorithms grapple",
+    "algorithms grapple",
+    "discern its",
+    "disconcerted by the unexpected query",
+    "as a language model",
+    "i don't possess",
+    "i do not possess",
 ]
 
 ROUTE_PROMPTS = {
@@ -84,6 +91,10 @@ def _save_json(path: Path, data: Dict[str, Any]) -> None:
 def _nan0_skill_config() -> Dict[str, Any]:
     cfg = _load_json(CONFIG_PATH, {})
     return ((cfg.get("skills") or {}).get("nan0") or {})
+
+
+def _vision_state_path() -> Path:
+    return Path(_nan0_skill_config().get("vision_state_path") or str(VISION_STATE_DEFAULT_PATH))
 
 
 def _speech_filter_mode() -> str:
@@ -298,7 +309,7 @@ def ollama_generate(model: str, prompt: str, timeout: float, temperature: float 
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=timeout)
+        response = requests.post(url, json=payload, timeout=max(3.0, min(float(timeout), 10.0)))
         response.raise_for_status()
         data = response.json()
         return clean_nan0_line(data.get("response") or "")
@@ -328,11 +339,10 @@ def _build_route_prompt(route: str, packet: Dict[str, Any]) -> str:
 
 
 def route_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
-    """Route an InnerThoughtPacket into a speech decision.
+    """Route an InnerThoughtPacket into the proper lane.
 
-    The router is decision-only. It may approve, suppress, defer, or mark a
-    thought memory/body-only, but it must not invent spoken lines. Final speech
-    is owned by Nan0Skill._generate_line().
+    This function no longer accepts raw events for speech routing.
+    Missing thought_id is always suppressed with reason missing_thought_origin.
     """
 
     if not isinstance(packet, dict):
@@ -342,6 +352,7 @@ def route_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
     if not thought_id:
         return _suppress_missing_thought(packet)
 
+    cfg = _config()
     state = _load_json(
         STATE_PATH,
         {
@@ -355,14 +366,16 @@ def route_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
 
     route, seed = classify_event(packet)
     family = _source_family_for_packet(packet)
+    recent = list(state.get("recent_lines") or [])[:12]
+
+    line = ""
+    model = ""
+    used_llm = False
     decision = "speak"
-    reason = "route_approved"
+    reason = "routed_from_thought"
 
     suppression_reason = packet.get("suppression_reason")
-    try:
-        speakability = float(packet.get("speakability") or 0.0)
-    except Exception:
-        speakability = 0.0
+    speakability = float(packet.get("speakability") or 0.0)
 
     if suppression_reason:
         decision = "suppress"
@@ -370,30 +383,105 @@ def route_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
     elif speakability < 0.35:
         decision = "body_only"
         reason = "speakability_below_threshold"
-    elif route == "deep":
-        decision = "memory_only"
-        reason = "deep_route_memory_only"
 
-    result = {
-        "route": route,
-        "seed": seed,
-        "model": "",
-        "used_llm": False,
-        "line": "",
-        "decision": decision,
-        "reason": reason,
-        "thought_id": thought_id,
-        "source_thought_id": thought_id,
-        "source_family": family,
-    }
+    if decision in {"suppress", "body_only", "memory_only", "defer"}:
+        result = {
+            "route": route,
+            "seed": seed,
+            "model": "",
+            "used_llm": False,
+            "line": "",
+            "decision": decision,
+            "reason": reason,
+            "thought_id": thought_id,
+            "source_thought_id": thought_id,
+            "source_family": family,
+        }
+        state.update(
+            {
+                "last_route": route,
+                "last_seed": seed,
+                "last_model": "",
+                "last_used_llm": False,
+                "last_line": "",
+                "last_decision": decision,
+                "last_reason": reason,
+                "last_thought_id": thought_id,
+                "last_at": time.time(),
+            }
+        )
+        _save_json(STATE_PATH, state)
+        _append_speech_debug({
+            "debug_stage": "router_decision",
+            "thought_id": thought_id,
+            "source": packet.get("source"),
+            "source_family": family,
+            "private_text": packet.get("private_text") or packet.get("thought_text"),
+            "mood": packet.get("mood"),
+            "pressure": packet.get("pressure"),
+            "novelty": packet.get("novelty"),
+            "speakability": packet.get("speakability"),
+            "decision": decision,
+            "decision_reason": reason,
+            "suppression_reason": reason,
+            "raw_line": None,
+            "final_line": None,
+            "voice_enabled": False,
+            "display_enabled": False,
+        })
+        return result
+
+    if route == "social":
+        # Router owns route/decision only. Nan0Skill owns final compression from
+        # private_text. Do not make a second model call here; it adds latency and
+        # can invent generic assistant sludge detached from the thought packet.
+        model = cfg.get("social_model") or "qwen2.5:3b"
+        line = ""
+        used_llm = False
+
+    elif route == "deep":
+        model = cfg.get("deep_model") or "qwen2.5:7b"
+        if cfg.get("deep_enabled", False):
+            prompt = _build_route_prompt("deep", packet)
+            line = ollama_generate(model, prompt, float(cfg.get("deep_timeout", 45)), 0.5) or ""
+            used_llm = bool(line)
+        else:
+            decision = "memory_only"
+            reason = "deep_disabled"
+
+    else:
+        model = cfg.get("live_model") or "tinyllama:latest"
+        if cfg.get("use_llm_for_live", False):
+            prompt = _build_route_prompt("live", packet)
+            line = ollama_generate(
+                model,
+                prompt,
+                float(cfg.get("live_timeout", 7)),
+                float(cfg.get("temperature", 0.8)),
+            ) or ""
+            used_llm = bool(line)
+
+        if not line and cfg.get("use_llm_for_live", False):
+            line = _fallback(seed, recent)
+
+    line = clean_nan0_line(line)
+
+    # The router may approve the lane without generating the final speech line.
+    # Nan0Skill._generate_line() remains the final thought-to-speech compressor.
+    if not line and decision == "speak":
+        reason = "route_approved_no_line"
+
+    if line:
+        recent = [line] + [old for old in recent if old != line]
 
     state.update(
         {
+            "recent_lines": recent[:12],
             "last_route": route,
             "last_seed": seed,
-            "last_model": "",
-            "last_used_llm": False,
-            "last_line": "",
+            "last_model": model,
+            "last_used_llm": used_llm,
+            "last_line": line,
             "last_decision": decision,
             "last_reason": reason,
             "last_thought_id": thought_id,
@@ -402,11 +490,22 @@ def route_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
     )
     _save_json(STATE_PATH, state)
 
+    result = {
+        "route": route,
+        "seed": seed,
+        "model": model,
+        "used_llm": used_llm,
+        "line": line,
+        "decision": decision,
+        "reason": reason,
+        "thought_id": thought_id,
+        "source_thought_id": thought_id,
+        "source_family": family,
+    }
     _append_speech_debug({
         "debug_stage": "router_decision",
         "thought_id": thought_id,
         "source": packet.get("source"),
-        "source_family": family,
         "private_text": packet.get("private_text") or packet.get("thought_text"),
         "mood": packet.get("mood"),
         "pressure": packet.get("pressure"),
@@ -415,8 +514,8 @@ def route_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
         "decision": decision,
         "decision_reason": reason,
         "suppression_reason": None if decision == "speak" else reason,
-        "raw_line": None,
-        "final_line": None,
+        "raw_line": line or None,
+        "final_line": line or None,
         "voice_enabled": decision == "speak",
         "display_enabled": decision == "speak",
     })
@@ -447,14 +546,15 @@ def thought_packet_to_event(packet: Dict[str, Any], vision_state: Optional[Dict[
 
 
 def route_vision_state_file() -> Dict[str, Any]:
-    vision = _load_json(VISION_STATE_PATH, {})
+    vision_path = _vision_state_path()
+    vision = _load_json(vision_path, {})
     packet = vision.get("thought_packet") or {}
 
     if not packet.get("thought_id"):
         result = _suppress_missing_thought(packet)
         vision["router"] = result
         vision["speech_allowed"] = False
-        _save_json(VISION_STATE_PATH, vision)
+        _save_json(vision_path, vision)
         return result
 
     event = thought_packet_to_event(packet, vision)
@@ -468,5 +568,5 @@ def route_vision_state_file() -> Dict[str, Any]:
         vision["thought_packet"]["routed_line"] = result["line"]
         vision["thought_packet"]["thought_id"] = result["thought_id"]
 
-    _save_json(VISION_STATE_PATH, vision)
+    _save_json(vision_path, vision)
     return result

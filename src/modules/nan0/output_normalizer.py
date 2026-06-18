@@ -48,6 +48,13 @@ GENERIC_BAD_PATTERNS = [
     "interesting question",
     "i understand",
     "certainly",
+    "my algorithms grapple",
+    "algorithms grapple",
+    "discern its",
+    "disconcerted by the unexpected query",
+    "as a language model",
+    "i don't possess",
+    "i do not possess",
 ]
 
 NAN0_MARKERS = [
@@ -273,6 +280,8 @@ def _sanitize_line(line: str) -> str:
             return ""
 
     if "emotional_charge" in line or "speech_pressure" in line or "target_actor" in line:
+        return ""
+    if "{" in line or "}" in line:
         return ""
 
     return line
