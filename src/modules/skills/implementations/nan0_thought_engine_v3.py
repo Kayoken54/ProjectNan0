@@ -33,11 +33,6 @@ except Exception:
     load_identity_memory = None
 
 try:
-    from src.modules.nan0.session_timeline import get_continuity_context
-except Exception:
-    get_continuity_context = None
-
-try:
     from src.modules.skills.memory.storage import MemoryStorage
 except Exception:
     MemoryStorage = None
@@ -255,13 +250,41 @@ def _read_vision_context(explicit: Optional[Dict[str, Any]] = None) -> Dict[str,
     if isinstance(explicit, dict) and explicit:
         return explicit
 
-    for path in (VISION_STACK_STATE_PATH, STATE_PATH):
-        if path.exists():
-            data = load_json(path, {})
-            if data:
-                return data
-    return {}
+    data = load_json(VISION_STACK_STATE_PATH, {})
+    return data if isinstance(data, dict) else {}
 
+
+
+
+def _read_continuity_context(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return session continuity context already attached by Nan0Skill.
+
+    This helper is deliberately local and read-only. It does not query the LLM,
+    does not create fallback speech, and does not fabricate memory. It only
+    normalizes continuity facts that the caller already placed on the event so
+    thought generation can use them without crashing when memory/continuity
+    enrichment is present or absent.
+    """
+    if not isinstance(event, dict):
+        return {}
+
+    enriched = event.get("_enriched_context")
+    if not isinstance(enriched, dict):
+        return {}
+
+    allowed_keys = (
+        "conversation_thread",
+        "phase_spine",
+        "obsession_engine",
+        "personal_canon",
+    )
+    continuity: Dict[str, Any] = {}
+    for key in allowed_keys:
+        value = enriched.get(key)
+        if isinstance(value, (dict, list, str, int, float, bool)) or value is None:
+            continuity[key] = value
+
+    return continuity
 
 def _read_relationship_context(actor_id: str = "kyo") -> Dict[str, Any]:
     if load_identity_memory is None:
@@ -324,14 +347,44 @@ TRANSPORT_ENVELOPE_KEYS = {
 
 
 def _extract_thought_text_value(obj: Any) -> str:
-    """Extract only a real thought text field from JSON-ish model output."""
+    """Extract only a real thought text field from JSON-ish model output.
+
+    Dolphin-family models sometimes wrap the requested object inside an
+    additional string field such as ``response`` or ``content``. That wrapper is
+    transport, not cognition. Extract through the wrapper, but still require a
+    thought-like value before accepting it as Nan0's private_text.
+    """
+    if isinstance(obj, str):
+        raw = obj.strip()
+        if not raw:
+            return ""
+        parsed = _extract_json(raw)
+        if parsed:
+            return _extract_thought_text_value(parsed)
+        return raw
+
     if not isinstance(obj, dict):
         return ""
+
     for key in THOUGHT_TEXT_KEYS:
         value = obj.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
-    # Some models nest the thought one layer down. Only accept known thought keys.
+
+    # Common provider/model wrappers. These are accepted only as containers.
+    for key in ("response", "content", "output", "completion"):
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            extracted = _extract_thought_text_value(value)
+            if extracted:
+                return extracted
+        elif isinstance(value, dict):
+            extracted = _extract_thought_text_value(value)
+            if extracted:
+                return extracted
+
+    # Some models nest the thought one layer down. Only accept known thought keys
+    # or known wrapper containers, never arbitrary transport/config blobs.
     for value in obj.values():
         if isinstance(value, dict):
             nested = _extract_thought_text_value(value)
@@ -779,11 +832,109 @@ Only repair non-thought garbage. Do not make Nan0 nicer. Do not quality-police w
         system=_read_persona(),
     )
     repaired = _clean_private_thought(_extract_thought_text_value(thought_json))
-    if not repaired:
-        return {}, "", latency_ms
-    if _invalid_private_thought_reason(repaired, event):
+    if not repaired and raw:
+        # Local model drift: keep usable model-generated mutter text only after
+        # JSON extraction has failed. This is not a scripted fallback.
+        repaired = _clean_private_thought(raw)
+        thought_json = {"thought_text": repaired, "memory_write_candidate": False}
+
+    still_bad = _invalid_private_thought_reason(repaired, event)
+    if still_bad:
+        retry_json, retry_text, retry_latency_ms = _plain_retry_private_thought(
+            event=event,
+            seed=seed,
+            invalid_reason=still_bad,
+            bad_text=repaired or bad_text,
+            model=model,
+            timeout=timeout,
+        )
+        latency_ms += retry_latency_ms
+        if retry_text:
+            return retry_json, retry_text, latency_ms
         return {}, "", latency_ms
     return thought_json, repaired, latency_ms
+
+def _build_plain_thought_prompt(event: Dict[str, Any], seed: str, invalid_reason: str, bad_text: str = "") -> str:
+    """Build a non-JSON retry prompt for local models that ignore JSON mode.
+
+    This still asks the model for Nan0's private thought. It is not a template
+    fallback and it never produces speech directly.
+    """
+    source = str(event.get("source") or "unknown")
+    family = _source_family_for_event(event)
+    speaker = str(event.get("speaker") or event.get("source_actor_id") or "unknown")
+    event_text = "" if source in {"monologue", "boot"} else str(event.get("text") or event.get("message") or "")
+    addressed = bool(event.get("addressed_to_nan0"))
+    enriched = event.get("_enriched_context") or {}
+    thread = enriched.get("conversation_thread") or {}
+
+    if family == "kyo" and _is_direct_question_event(event):
+        job = "Kyo asked directly. Form Nan0's private reaction to the subject. Answer, dodge, suspect, or resent it. Do not mirror Kyo's words."
+    elif family == "kyo":
+        job = "Kyo touched the room. Form Nan0's private reaction to Kyo."
+    elif family == "discord":
+        job = "A Discord voice entered the room. Form Nan0's private reaction as witness, menace, audience, or furniture."
+    elif family == "vision":
+        job = "The screen changed. Form Nan0's private reaction with uncertainty."
+    else:
+        job = "Form Nan0's private reaction from inside the room."
+
+    context = {
+        "source_family": family,
+        "source": source,
+        "speaker": speaker,
+        "addressed_to_nan0": addressed,
+        "seed": seed,
+        "incoming_words": event_text[:420],
+        "thread": thread,
+        "bad_previous_output": str(bad_text or "")[:260],
+    }
+
+    return f"""
+You are producing ONLY Nan0's private inner thought.
+No JSON. No labels. No roleplay transcript. No bullets.
+Do not begin with Nan0:, Thought:, Response:, Assistant:, or any stage direction.
+Do not copy the incoming words. Do not output a transport envelope.
+
+The line must be a raw private mutter, not final speech.
+Rude, weird, possessive, suspicious, petty, or low-information Nan0 is allowed.
+Helpful assistant phrasing is garbage.
+
+Previous failure reason: {invalid_reason}
+Runtime material: {_compact_context(context, 900)}
+Job: {job}
+
+Return one private Nan0 thought now.
+""".strip()
+
+
+def _plain_retry_private_thought(
+    event: Dict[str, Any],
+    seed: str,
+    invalid_reason: str,
+    bad_text: str,
+    model: str,
+    timeout: float,
+) -> tuple[Dict[str, Any], str, int]:
+    prompt = _build_plain_thought_prompt(event, seed, invalid_reason, bad_text)
+    raw, latency_ms = _call_ollama_plain(
+        prompt=prompt,
+        model=model,
+        timeout=timeout,
+        num_predict=90,
+        temperature=0.88,
+        system=_read_persona(),
+    )
+    private_text = _clean_private_thought(raw)
+    if _invalid_private_thought_reason(private_text, event):
+        return {}, "", latency_ms
+    return {
+        "thought_text": private_text,
+        "mood": _mood_from_context(private_text, event, {}),
+        "memory_write_candidate": False,
+        "source_repair": "plain_model_retry",
+    }, private_text, latency_ms
+
 
 def _clean_private_thought(text: str) -> str:
     text = _strip_jsonish(text)
@@ -1046,16 +1197,16 @@ def _ollama_timeout_for_event(event: Dict[str, Any]) -> float:
     return float(cfg.get("live_timeout", 7))
 
 
-def _call_ollama(
+def _call_ollama_json(
     prompt: str,
     model: str,
     timeout: float,
     num_predict: int = 150,
     temperature: float = 0.88,
     system: Optional[str] = None,
-) -> tuple[str, int]:
+) -> tuple[Dict[str, Any], str, int]:
     if requests is None:
-        return "", 0
+        return {}, "", 0
 
     cfg = _router_config()
     skill_cfg = _nan0_skill_config()
@@ -1073,53 +1224,34 @@ def _call_ollama(
         except Exception:
             pass
 
+    payload = {
+        "model": model,
+        "system": system or _read_persona(),
+        "prompt": prompt,
+        "format": "json",
+        "stream": False,
+        "keep_alive": "2h",
+        "options": options,
+    }
+
     started = time.perf_counter()
     try:
-        response = requests.post(
-            _ollama_url(),
-            json={
-                "model": model,
-                "system": system or _read_persona(),
-                "prompt": prompt,
-                "format": "json",
-                "stream": False,
-                "keep_alive": "2h",
-                "options": options,
-            },
-            timeout=timeout,
-        )
+        response = requests.post(_ollama_url(), json=payload, timeout=timeout)
         response.raise_for_status()
-        raw = (response.json().get("response") or "").strip()
+        body = response.json()
+        raw = str(body.get("response") or body.get("message") or "").strip()
         latency_ms = max(1, int((time.perf_counter() - started) * 1000))
-        return raw, latency_ms
+
+        parsed = _extract_json(raw)
+        if not parsed and isinstance(body, dict):
+            parsed = _extract_json(json.dumps(body, ensure_ascii=False))
+        if not raw and parsed:
+            raw = json.dumps(parsed, ensure_ascii=False)
+        return parsed, raw, latency_ms
     except Exception:
         latency_ms = max(1, int((time.perf_counter() - started) * 1000))
-        return "", latency_ms
+        return {}, "", latency_ms
 
-
-def _call_ollama_json(
-    prompt: str,
-    model: str,
-    timeout: float,
-    num_predict: int = 150,
-    temperature: float = 0.88,
-    system: Optional[str] = None,
-) -> tuple[Dict[str, Any], str, int]:
-    try:
-        raw, latency_ms = _call_ollama(
-            prompt=prompt,
-            model=model,
-            timeout=timeout,
-            num_predict=num_predict,
-            temperature=temperature,
-            system=system,
-        )
-    except TypeError:
-        raw, latency_ms = _call_ollama(prompt, model, timeout, num_predict=num_predict, temperature=temperature)
-    parsed = _extract_json(raw)
-    if not parsed and raw:
-        parsed = {"thought_text": raw}
-    return parsed, raw, latency_ms
 
 
 def _call_ollama_plain(
@@ -1128,6 +1260,7 @@ def _call_ollama_plain(
     timeout: float,
     num_predict: int = 80,
     temperature: float = 0.85,
+    system: Optional[str] = None,
 ) -> tuple[str, int]:
     if requests is None:
         return "", 0
@@ -1154,7 +1287,7 @@ def _call_ollama_plain(
             _ollama_url(),
             json={
                 "model": model,
-                "system": _read_persona(),
+                "system": system or _read_persona(),
                 "prompt": prompt,
                 "stream": False,
                 "keep_alive": "2h",
@@ -1163,7 +1296,10 @@ def _call_ollama_plain(
             timeout=timeout,
         )
         response.raise_for_status()
-        raw = (response.json().get("response") or "").strip()
+        body = response.json()
+        raw = str(body.get("response") or body.get("message") or "").strip()
+        if not raw:
+            raw = _extract_thought_text_value(body).strip()
         return raw, max(1, int((time.perf_counter() - started) * 1000))
     except Exception:
         return "", max(1, int((time.perf_counter() - started) * 1000))
@@ -1189,53 +1325,6 @@ def _call_ollama(
         return json.dumps(thought_json, ensure_ascii=False), latency_ms
     return "", latency_ms
 
-def _call_ollama_json(
-    prompt: str,
-    model: str,
-    timeout: float,
-    num_predict: int = 150,
-    temperature: float = 0.88,
-    system: Optional[str] = None,
-) -> tuple[Dict[str, Any], str, int]:
-    try:
-        raw, latency_ms = _call_ollama(
-            prompt=prompt,
-            model=model,
-            timeout=timeout,
-            num_predict=num_predict,
-            temperature=temperature,
-            system=system,
-        )
-    except TypeError:
-        raw, latency_ms = _call_ollama(prompt, model, timeout, num_predict=num_predict, temperature=temperature)
-    parsed = _extract_json(raw)
-    if not parsed and raw:
-        parsed = {"thought_text": raw}
-    return parsed, raw, latency_ms
-
-def _call_ollama_json(
-    prompt: str,
-    model: str,
-    timeout: float,
-    num_predict: int = 150,
-    temperature: float = 0.88,
-    system: Optional[str] = None,
-) -> tuple[Dict[str, Any], str, int]:
-    try:
-        raw, latency_ms = _call_ollama(
-            prompt=prompt,
-            model=model,
-            timeout=timeout,
-            num_predict=num_predict,
-            temperature=temperature,
-            system=system,
-        )
-    except TypeError:
-        raw, latency_ms = _call_ollama(prompt, model, timeout, num_predict=num_predict, temperature=temperature)
-    parsed = _extract_json(raw)
-    if not parsed and raw:
-        parsed = {"thought_text": raw}
-    return parsed, raw, latency_ms
 
 def _extract_json(raw: str) -> Dict[str, Any]:
     if not raw:
@@ -1443,7 +1532,6 @@ def _build_json_thought_prompt(
     relationship_context: Dict[str, Any],
     memory_context: List[str],
     vision_context: Dict[str, Any],
-    continuity_context: Dict[str, Any],
 ) -> str:
     source = str(event.get("source") or "unknown")
     family = _source_family_for_event(event)
@@ -1585,6 +1673,11 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
 
     emotional_context = _read_presence_state()
     relationship_context = _read_relationship_context(actor_id)
+    continuity_context = _read_continuity_context(event)
+    if continuity_context:
+        enriched = event.setdefault("_enriched_context", {})
+        if isinstance(enriched, dict):
+            enriched.setdefault("continuity_context", continuity_context)
     vision = _read_vision_context(vision_context)
 
     memory_query = " ".join(
@@ -1599,7 +1692,6 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
         if x
     )
     memory_context = _query_recent_memory(memory_query, limit=4)
-    continuity_context = _read_continuity_context()
 
     model = _ollama_model_for_event(event)
     timeout = _ollama_timeout_for_event(event)
@@ -1610,7 +1702,6 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
         relationship_context=relationship_context,
         memory_context=memory_context,
         vision_context=vision,
-        continuity_context=continuity_context,
     )
 
     # Phase 3 JSON bridge restore:
@@ -1629,10 +1720,10 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
     if thought_json:
         private_text = _clean_private_thought(_extract_thought_text_value(thought_json))
     else:
-        # Structured JSON is the active thought contract. Malformed transport or
-        # plain text with no usable JSON thought_text is invalid and may only be
-        # recovered by the repair path below.
-        private_text = ""
+        # Keep a narrow plain-text fallback for older/local model drift. Malformed
+        # JSON with no extractable thought_text remains invalid below.
+        private_text = _clean_private_thought(raw)
+        thought_json = {"mutter_text": private_text, "memory_write_candidate": False}
 
     system_suppression_reason = _invalid_private_thought_reason(private_text, event)
     if system_suppression_reason:
@@ -1640,14 +1731,14 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
             event=event,
             seed=seed,
             invalid_reason=system_suppression_reason,
-            bad_text=private_text,
+            bad_text=private_text or raw,
             model=model,
             timeout=timeout,
         )
+        latency_ms += repair_latency_ms
         if repaired_text:
             thought_json = repaired_json
             private_text = repaired_text
-            latency_ms += repair_latency_ms
             system_suppression_reason = None
         elif _is_direct_question_event(event) and str(system_suppression_reason) == "question_echo_non_mutter":
             # One extra same-event retry for direct Kyo/Discord questions.
@@ -1657,11 +1748,11 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
                 event=event,
                 seed=seed,
                 invalid_reason="question_echo_retry",
-                bad_text=private_text,
+                bad_text=private_text or raw,
                 model=model,
                 timeout=timeout,
             )
-            latency_ms += repair_latency_ms + retry_latency_ms
+            latency_ms += retry_latency_ms
             if retry_text:
                 thought_json = retry_json
                 private_text = retry_text

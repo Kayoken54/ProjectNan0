@@ -1,13 +1,13 @@
 {
   "recent_lines": [],
-  "last_route": "",
-  "last_seed": "",
-  "last_at": 0.0,
+  "last_route": "social",
+  "last_seed": "social",
+  "last_at": 1781742092.2977664,
   "blocked_missing_thought": 0,
   "last_model": "",
   "last_used_llm": false,
   "last_line": "",
-  "last_decision": "",
-  "last_reason": "",
-  "last_thought_id": ""
+  "last_decision": "suppress",
+  "last_reason": "json_transport_envelope_leakage",
+  "last_thought_id": "thought_59235475b8ff418cb07961e08d02d3aa"
 }

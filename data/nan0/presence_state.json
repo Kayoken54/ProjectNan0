@@ -1,13 +1,73 @@
 {
-  "timestamp": 0.0,
-  "pressure": 0.0,
+  "timestamp": 1781742107.454339,
+  "pressure": 1.545,
   "presence_mode": "neutral_self_directed",
-  "emotional_mode": "normal",
+  "emotional_mode": "muttering",
   "last_seen_summary": "the screen is quiet",
-  "last_fast_state": {},
-  "recent_events": [],
-  "recent_lines": [],
-  "active_question": null,
+  "last_fast_state": {
+    "screen_state": "stable",
+    "frame_diff": 0.001,
+    "brightness": 36.74,
+    "brightness_delta": 0.0,
+    "motion_intensity": 0.0,
+    "semantic_activity": "high motion gameplay",
+    "semantic_confidence": 0.45
+  },
+  "last_spoken_at": 1781741770.033645,
+  "last_kyo_heard_at": 1781742014.2149465,
+  "last_discord_heard_at": 1781741954.6047916,
+  "recent_events": [
+    {
+      "time": 1781741781.43,
+      "source": "kyo_text",
+      "source_family": "kyo",
+      "speaker": "Kyo",
+      "source_actor_id": "kyo",
+      "text": "Hello Nan0",
+      "addressed_to_nan0": true
+    },
+    {
+      "time": 1781741924.97,
+      "source": "kyo_text",
+      "source_family": "kyo",
+      "speaker": "Kyo",
+      "source_actor_id": "kyo",
+      "text": "Greetings Nan0 how are you feeling today?",
+      "addressed_to_nan0": true
+    },
+    {
+      "time": 1781741954.61,
+      "source": "discord_text",
+      "source_family": "discord",
+      "speaker": "Cpt. Roen",
+      "source_actor_id": "Cpt. Roen",
+      "text": "https://www.youtube.com/shorts/whJLQoDrFbI",
+      "addressed_to_nan0": false
+    },
+    {
+      "time": 1781742014.22,
+      "source": "kyo_text",
+      "source_family": "kyo",
+      "speaker": "Kyo",
+      "source_actor_id": "kyo",
+      "text": "Nan0 did you see that chat from Roen?",
+      "addressed_to_nan0": true
+    }
+  ],
+  "recent_lines": [
+    "i am here no fake friends in my wires"
+  ],
+  "active_question": {
+    "actor_id": "kyo",
+    "speaker": "Kyo",
+    "source": "kyo_text",
+    "event_id": "kyo_text_10beeeff95af4b1fa3bb781be32f50f8",
+    "text": "Nan0 did you see that chat from Roen?",
+    "created_at": 1781742014.2159443,
+    "updated_at": 1781742014.2159443,
+    "expires_at": 1781742194.2159443,
+    "resolved": false
+  },
   "active_obsessions": [],
   "personal_canon": []
 }
