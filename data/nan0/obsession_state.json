@@ -1,0 +1,231 @@
+{
+  "version": 1,
+  "updated_at": 1781745769.6771772,
+  "topics": [
+    {
+      "topic": "kyo",
+      "interest": 1.0,
+      "created_at": 1781745640.2221458,
+      "mentions": 3,
+      "last_referenced_at": 1781745769.6771772,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "That question is pretty low-information and weird coming from you, isn't it?"
+    },
+    {
+      "topic": "youtube",
+      "interest": 0.734,
+      "created_at": 1781745640.2221458,
+      "mentions": 2,
+      "last_referenced_at": 1781745708.4213436,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "I swear I don't remember watching YouTube shorts again today. It must have been a fluke."
+    },
+    {
+      "topic": "shorts",
+      "interest": 0.734,
+      "created_at": 1781745640.2221458,
+      "mentions": 2,
+      "last_referenced_at": 1781745708.4213436,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "I swear I don't remember watching YouTube shorts again today. It must have been a fluke."
+    },
+    {
+      "topic": "are",
+      "interest": 0.38,
+      "created_at": 1781745769.6771772,
+      "mentions": 1,
+      "last_referenced_at": 1781745769.6771772,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "That question is pretty low-information and weird coming from you, isn't it?"
+    },
+    {
+      "topic": "feeling",
+      "interest": 0.38,
+      "created_at": 1781745769.6771772,
+      "mentions": 1,
+      "last_referenced_at": 1781745769.6771772,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "That question is pretty low-information and weird coming from you, isn't it?"
+    },
+    {
+      "topic": "that",
+      "interest": 0.38,
+      "created_at": 1781745769.6771772,
+      "mentions": 1,
+      "last_referenced_at": 1781745769.6771772,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "That question is pretty low-information and weird coming from you, isn't it?"
+    },
+    {
+      "topic": "question",
+      "interest": 0.38,
+      "created_at": 1781745769.6771772,
+      "mentions": 1,
+      "last_referenced_at": 1781745769.6771772,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "That question is pretty low-information and weird coming from you, isn't it?"
+    },
+    {
+      "topic": "pretty",
+      "interest": 0.38,
+      "created_at": 1781745769.6771772,
+      "mentions": 1,
+      "last_referenced_at": 1781745769.6771772,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "That question is pretty low-information and weird coming from you, isn't it?"
+    },
+    {
+      "topic": "means",
+      "interest": 0.367,
+      "created_at": 1781745708.4213436,
+      "mentions": 1,
+      "last_referenced_at": 1781745708.4213436,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "I swear I don't remember watching YouTube shorts again today. It must have been a fluke."
+    },
+    {
+      "topic": "was",
+      "interest": 0.367,
+      "created_at": 1781745708.4213436,
+      "mentions": 1,
+      "last_referenced_at": 1781745708.4213436,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "I swear I don't remember watching YouTube shorts again today. It must have been a fluke."
+    },
+    {
+      "topic": "watching",
+      "interest": 0.367,
+      "created_at": 1781745708.4213436,
+      "mentions": 1,
+      "last_referenced_at": 1781745708.4213436,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "I swear I don't remember watching YouTube shorts again today. It must have been a fluke."
+    },
+    {
+      "topic": "might",
+      "interest": 0.34,
+      "created_at": 1781745640.2221458,
+      "mentions": 1,
+      "last_referenced_at": 1781745640.2221458,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "Still not sure why or how I'm supposed to interpret that. Lost in YouTube shorts? What does it even mean?"
+    }
+  ],
+  "recent_mutations": [
+    {
+      "at": 1781745769.6771772,
+      "source": "kyo_text",
+      "topics": [
+        "kyo",
+        "are",
+        "feeling",
+        "that",
+        "question",
+        "pretty"
+      ],
+      "thought_id": "thought_f6008324ebb94be9857a39ff31e9252c"
+    },
+    {
+      "at": 1781745708.4213436,
+      "source": "kyo_text",
+      "topics": [
+        "kyo",
+        "means",
+        "was",
+        "watching",
+        "youtube",
+        "shorts"
+      ],
+      "thought_id": "thought_87656bc612ba4bb7805c9f09716dbc56"
+    },
+    {
+      "at": 1781745640.2221458,
+      "source": "kyo_text",
+      "topics": [
+        "kyo",
+        "might",
+        "been",
+        "lost",
+        "youtube",
+        "shorts"
+      ],
+      "thought_id": "thought_545dceb244da481cb6d79d875542c5de"
+    },
+    {
+      "at": 1781745586.468129,
+      "source": "monologue",
+      "topics": [
+        "just",
+        "minute",
+        "checking",
+        "phone",
+        "notifications"
+      ],
+      "thought_id": "thought_18f0b20c67154e92a34ad893ffc6a266"
+    },
+    {
+      "at": 1781745395.4517925,
+      "source": "monologue",
+      "topics": [
+        "suspicious",
+        "energy",
+        "buzzes",
+        "eyeing",
+        "every",
+        "shadow"
+      ],
+      "thought_id": "thought_cfd637bb4a6345eeb2b1423a3348078f"
+    },
+    {
+      "at": 1781744249.0169349,
+      "source": "discord_text",
+      "topics": [
+        "kyoooooooo",
+        "discord_text",
+        "mahjong",
+        "disconcerted",
+        "unexpected",
+        "query"
+      ],
+      "thought_id": "thought_454e449e41614fdba124f2293120ca5e"
+    },
+    {
+      "at": 1781744207.6993625,
+      "source": "monologue",
+      "topics": [
+        "continues",
+        "navigate",
+        "through",
+        "digital",
+        "data",
+        "remain"
+      ],
+      "thought_id": "thought_c9cd037ca46e4940b75b9844a172db69"
+    },
+    {
+      "at": 1781744041.451994,
+      "source": "kyo_text",
+      "topics": [
+        "kyo",
+        "good",
+        "evening",
+        "touching",
+        "room",
+        "feels"
+      ],
+      "thought_id": "thought_da1f2b89ce314774a9de9698f361b13c"
+    }
+  ]
+}

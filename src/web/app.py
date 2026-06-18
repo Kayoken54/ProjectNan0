@@ -135,15 +135,12 @@ def get_status():
 @app.post("/chat")
 async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     brain = get_brain()
-    
-    # 1. generate text
-    mood, message = await brain.generate_response(request.message)
-    
-    # 2. schedule output
-    background_tasks.add_task(brain.perform_output_task, mood, message)
-    
+
+    mood, message = await brain.process_text_input(request.message)
+
     return {
-        "status": "success", 
+        "status": "success",
+        "routed_by": "nan0_thought_pipeline",
         "response": {
             "role": "assistant",
             "content": message,
@@ -161,27 +158,23 @@ async def interrupt_speech():
 @app.post("/audio")
 async def upload_audio(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     brain = get_brain()
-    
-    # save temp file
+
     temp_dir = Path("temp")
     temp_dir.mkdir(exist_ok=True)
     temp_file = temp_dir / file.filename
-    
+
     with open(temp_file, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-    
-    # process
-    mood, message, transcript = await brain.generate_audio_response(str(temp_file))
-    
-    # schedule output
-    background_tasks.add_task(brain.perform_output_task, mood, message)
-    
-    # cleanup
-    if temp_file.exists():
-        os.remove(temp_file)
-        
+
+    try:
+        mood, message, transcript = await brain.generate_audio_response(str(temp_file))
+    finally:
+        if temp_file.exists():
+            os.remove(temp_file)
+
     return {
-        "status": "success", 
+        "status": "success",
+        "routed_by": "nan0_thought_pipeline",
         "response": {
             "role": "assistant",
             "content": message,
@@ -206,25 +199,27 @@ class DiscordChatRequest(BaseModel):
 @app.post("/discord/chat")
 async def discord_chat(request: DiscordChatRequest, background_tasks: BackgroundTasks):
     brain = get_brain()
-    
-    logger.info(f"Discord Chat from {request.username}: {request.message}")
-    
-    # Route Discord text into Nan0's conversation lane first.
-    nan0_skill = getattr(brain.skill_manager, "skills", {}).get("nan0")
-    if nan0_skill and getattr(nan0_skill, "is_active", False):
-        await nan0_skill.on_discord_message(request.username, request.message, source="discord")
-        return {
-            "status": "success",
-            "response": "Nan0 heard you. She is routing it through the medium lane.",
-            "mood": "muttering"
-        }
 
-    # Fallback if Nan0 skill is unavailable.
-    formatted_message = f"[{request.username}] {request.message}"
-    mood, message = await brain.generate_response(formatted_message)
-    
+    logger.info(f"Discord Chat from {request.username}: {request.message}")
+
+    nan0_skill = getattr(brain.skill_manager, "skills", {}).get("nan0")
+    if not (nan0_skill and getattr(nan0_skill, "is_active", False)):
+        raise HTTPException(status_code=503, detail="Nan0Skill is not active; generic Discord chatbot fallback is disabled.")
+
+    mood, message = await nan0_skill.handle_external_message(
+        request.message,
+        actor=request.username,
+        source="discord_text",
+        metadata={
+            "channel_id": request.channelId,
+            "speaker": request.username,
+            "addressed_to_nan0": nan0_skill._is_addressed_to_nan0(request.message),
+        },
+    )
+
     return {
         "status": "success",
+        "routed_by": "nan0_thought_pipeline",
         "response": message,
         "mood": mood
     }
@@ -256,11 +251,15 @@ async def discord_audio_interaction(
         if audio_bytes:
              audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
         
+        packet = getattr(brain, "last_nan0_speech_packet", None)
+        thought_id = packet.get("thought_id") if isinstance(packet, dict) else None
+
         return {
             "status": status, # "success" or "resume"
             "text": text_response,
             "transcript": transcript,
-            "audio_base64": audio_b64
+            "audio_base64": audio_b64,
+            "thought_id": thought_id
         }
     except Exception as e:
         logger.error(f"Discord Audio Error: {e}")

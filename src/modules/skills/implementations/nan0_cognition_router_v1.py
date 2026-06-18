@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -14,7 +15,8 @@ except Exception:
 
 CONFIG_PATH = Path("config.json")
 STATE_PATH = Path("data/nan0_cognition_router_state.json")
-VISION_STATE_PATH = Path("data/nan0_vision_state.json")
+VISION_STATE_DEFAULT_PATH = Path("data/vision/nan0_vision_stack_state.json")
+SPEECH_DEBUG_DEFAULT_PATH = Path("data/nan0/speech_debug.jsonl")
 
 
 BANNED_SPEECH_FRAGMENTS = [
@@ -40,60 +42,27 @@ BANNED_SPEECH_FRAGMENTS = [
     "thought_packet",
     "private_text",
     "source_thought_id",
+    "my algorithms grapple",
+    "algorithms grapple",
+    "discern its",
+    "disconcerted by the unexpected query",
+    "as a language model",
+    "i don't possess",
+    "i do not possess",
 ]
-
-LIVE_FALLBACKS = {
-    "combat_spike": [
-        "That got violent fast. Kyo is either locked in or inventing new failure shapes.",
-        "The game just started chewing on the screen. I approve, suspiciously.",
-        "Something on-screen picked a fight. Kyo better not embarrass both of us.",
-        "The screen got hostile. Tiny tragedy engine is online.",
-    ],
-    "dark_drop": [
-        "Everything dropped into black. The game is hiding evidence.",
-        "Black screen. Either loading, dying, or dramatic coward behavior.",
-        "The room blinked. I hate when the rectangle learns suspense.",
-        "Void event detected. Very theatrical. Very annoying.",
-    ],
-    "menu_open": [
-        "Menu energy. Kyo is negotiating with buttons again.",
-        "The game turned into paperwork. Horrible little interface nest.",
-        "Kyo opened the bureaucracy rectangle. Brave. Unwise.",
-    ],
-    "text_heavy": [
-        "The screen got wordy. Someone gave the pixels a legal department.",
-        "Too much text. The rectangle is trying to become homework.",
-        "Words everywhere. Kyo is being attacked by glyphs.",
-    ],
-    "motion_after_stable": [
-        "It was quiet, then it moved. That is how problems introduce themselves.",
-        "The calm broke first. I saw it crack.",
-        "Something woke up on-screen. I am blaming the most suspicious object first.",
-    ],
-    "stable_after_motion": [
-        "The chaos stopped too cleanly. I do not trust clean stops.",
-        "Everything settled after thrashing. Fake peace. Smells like a trap.",
-        "The screen calmed down. Suspicious little ceasefire.",
-    ],
-    "unknown": [
-        "I saw enough movement to judge Kyo, not enough to respect the situation.",
-        "The screen is being vague on purpose. I hate vague machines.",
-        "Something changed. Not enough to panic. Enough to side-eye reality.",
-    ],
-}
 
 ROUTE_PROMPTS = {
     "live": (
         "You are Nan0, a small chaotic AI vtuber gremlin in Kyo's room. "
         "Write ONE short spoken line only. No JSON. No assistant tone. No explaining. "
-        "React to the supplied INNER THOUGHT, not raw screen state. "
+        "React to the supplied private muttering, not raw screen state. "
         "Avoid these phrases: pixels are moving, signal changed, I have opinions, "
         "still here, runtime intact, monitor 3."
     ),
     "social": (
         "You are Nan0, Kyo's chaotic AI vtuber companion. "
         "Write ONE short spoken line only. No JSON. No assistant tone. "
-        "React socially from the supplied INNER THOUGHT. "
+        "React socially from the supplied private muttering. "
         "Use attachment, ego, tech-gremlin worldview, or playful judgment. "
         "Do not narrate raw event state."
     ),
@@ -116,6 +85,46 @@ def _save_json(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
+
+
+
+def _nan0_skill_config() -> Dict[str, Any]:
+    cfg = _load_json(CONFIG_PATH, {})
+    return ((cfg.get("skills") or {}).get("nan0") or {})
+
+
+def _vision_state_path() -> Path:
+    return Path(_nan0_skill_config().get("vision_state_path") or str(VISION_STATE_DEFAULT_PATH))
+
+
+def _speech_filter_mode() -> str:
+    mode = str(_nan0_skill_config().get("speech_filter_mode") or "normal").strip().lower()
+    if mode not in {"normal", "raw", "debug_only"}:
+        return "normal"
+    return mode
+
+
+def _speech_debug_enabled() -> bool:
+    return bool(_nan0_skill_config().get("speech_debug_enabled", False))
+
+
+def _speech_debug_path() -> Path:
+    return Path(_nan0_skill_config().get("speech_debug_path") or str(SPEECH_DEBUG_DEFAULT_PATH))
+
+
+def _append_speech_debug(record: Dict[str, Any]) -> None:
+    if not _speech_debug_enabled():
+        return
+    try:
+        path = _speech_debug_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = dict(record)
+        data.setdefault("created_at", time.time())
+        data.setdefault("debug_stage", "router")
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 def _config() -> Dict[str, Any]:
     cfg = _load_json(CONFIG_PATH, {})
@@ -140,23 +149,36 @@ def clean_nan0_line(line: str) -> str:
     if not text:
         return ""
 
+    raw_before = text
+    mode = _speech_filter_mode()
     low = text.lower()
 
-    if any(bad in low for bad in BANNED_SPEECH_FRAGMENTS):
-        return ""
-
+    # Hard runtime rails that stay even in raw mode.
     if text.startswith("{") or text.startswith("["):
         return ""
-
-    if any(leak in low for leak in ["private thought", "inner thought", "json:", "```"]):
+    if any(leak in low for leak in ["private thought", "private muttering", "json:", "```", "thought_text", "private_text", "source_thought_id"]):
         return ""
+    text = re.sub(r"\b[\w.-]+\.exe\b", "the application", text, flags=re.I)
 
+    if mode == "raw":
+        if len(text) > 220:
+            text = text[:217].rstrip() + "..."
+        _append_speech_debug({
+            "debug_stage": "router_clean_line",
+            "filter_mode": mode,
+            "raw_line": raw_before,
+            "final_line": text,
+            "normalizer_changed": raw_before != text,
+        })
+        return text
+
+    low = text.lower()
+    if any(bad in low for bad in BANNED_SPEECH_FRAGMENTS):
+        return ""
     if low.startswith(("sure,", "of course", "as an ai", "i can help", "here is", "here are")):
         return ""
-
     if len(text) > 180:
         text = text[:177].rstrip() + "..."
-
     return text
 
 
@@ -200,8 +222,28 @@ def validate_thought_origin(packet: Dict[str, Any]) -> None:
         raise AssertionError("missing_thought_origin")
 
 
+def _source_family_for_packet(packet: Dict[str, Any]) -> str:
+    source = str((packet or {}).get("source") or "").strip().lower()
+    family = str((packet or {}).get("source_family") or ((packet or {}).get("event_context") or {}).get("source_family") or "").strip().lower()
+
+    if family in {"kyo", "discord", "vision", "proactive", "system", "external"}:
+        return family
+    if source in {"kyo", "kyo_text", "kyo_voice", "kyo_mic", "manual", "manual_command", "typed", "text", "console", "mic", "voice"} or source.startswith("kyo_"):
+        return "kyo"
+    if "discord" in source:
+        return "discord"
+    if source in {"vision", "vision_stack_v1", "screen", "fast_eyes", "vision_pressure"} or "vision" in source:
+        return "vision"
+    if source in {"monologue", "proactive", "social_pressure", "idle_presence", "pressure_idle"}:
+        return "proactive"
+    if source in {"boot", "system", "shutdown"}:
+        return "system"
+    return "external"
+
+
 def classify_event(event: Dict[str, Any]) -> Tuple[str, str]:
     source = str(event.get("source") or "").lower()
+    family = _source_family_for_packet(event)
     thought_type = str(event.get("thought_type") or "").lower()
     seed = str(event.get("thought_seed") or event.get("seed_text") or event.get("seed") or "").lower()
     text = str(event.get("private_text") or event.get("thought_text") or event.get("text") or "").lower()
@@ -209,11 +251,11 @@ def classify_event(event: Dict[str, Any]) -> Tuple[str, str]:
     if thought_type in {"direct_reply", "discord_reply", "relationship_read"}:
         return "social", "social"
 
-    if source in {"discord", "kyo", "mic", "voice", "social_pressure"} or "discord" in source:
+    if family in {"kyo", "discord"} or source == "social_pressure":
         return "social", "social"
 
     if "kyo" in text or "nan0" in text or event.get("speaker"):
-        if source not in {"vision", "vision_stack_v1", "vision_pressure", "fast_eyes"}:
+        if family != "vision":
             return "social", "social"
 
     if thought_type in {"shutdown_summary", "deep_reflection"}:
@@ -267,7 +309,7 @@ def ollama_generate(model: str, prompt: str, timeout: float, temperature: float 
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=timeout)
+        response = requests.post(url, json=payload, timeout=max(3.0, min(float(timeout), 10.0)))
         response.raise_for_status()
         data = response.json()
         return clean_nan0_line(data.get("response") or "")
@@ -276,11 +318,9 @@ def ollama_generate(model: str, prompt: str, timeout: float, temperature: float 
 
 
 def _fallback(seed: str, recent: list[str]) -> str:
-    pool = LIVE_FALLBACKS.get(seed) or LIVE_FALLBACKS["unknown"]
-    choices = [line for line in pool if line not in recent]
-    if not choices:
-        choices = pool
-    return random.choice(choices)
+    # Prime Directive: no scripted live fallback speech.
+    # If the route LLM cannot create a line, Nan0Skill will suppress.
+    return ""
 
 
 def _build_route_prompt(route: str, packet: Dict[str, Any]) -> str:
@@ -293,7 +333,7 @@ def _build_route_prompt(route: str, packet: Dict[str, Any]) -> str:
         f"Required origin thought_id: {packet.get('thought_id')}\n"
         f"Mood: {mood}\n"
         f"Target actor: {target}\n"
-        f"Nan0 inner thought:\n{private_text}\n\n"
+        f"Nan0 private muttering:\n{private_text}\n\n"
         f"Nan0 spoken line:"
     )
 
@@ -325,6 +365,7 @@ def route_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     route, seed = classify_event(packet)
+    family = _source_family_for_packet(packet)
     recent = list(state.get("recent_lines") or [])[:12]
 
     line = ""
@@ -354,6 +395,7 @@ def route_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
             "reason": reason,
             "thought_id": thought_id,
             "source_thought_id": thought_id,
+            "source_family": family,
         }
         state.update(
             {
@@ -369,21 +411,33 @@ def route_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
         _save_json(STATE_PATH, state)
+        _append_speech_debug({
+            "debug_stage": "router_decision",
+            "thought_id": thought_id,
+            "source": packet.get("source"),
+            "source_family": family,
+            "private_text": packet.get("private_text") or packet.get("thought_text"),
+            "mood": packet.get("mood"),
+            "pressure": packet.get("pressure"),
+            "novelty": packet.get("novelty"),
+            "speakability": packet.get("speakability"),
+            "decision": decision,
+            "decision_reason": reason,
+            "suppression_reason": reason,
+            "raw_line": None,
+            "final_line": None,
+            "voice_enabled": False,
+            "display_enabled": False,
+        })
         return result
 
     if route == "social":
+        # Router owns route/decision only. Nan0Skill owns final compression from
+        # private_text. Do not make a second model call here; it adds latency and
+        # can invent generic assistant sludge detached from the thought packet.
         model = cfg.get("social_model") or "qwen2.5:3b"
-        if cfg.get("use_llm_for_social", True):
-            prompt = _build_route_prompt("social", packet)
-            line = ollama_generate(
-                model,
-                prompt,
-                float(cfg.get("social_timeout", 18)),
-                float(cfg.get("temperature", 0.8)),
-            ) or ""
-            used_llm = bool(line)
-        if not line:
-            line = ""
+        line = ""
+        used_llm = False
 
     elif route == "deep":
         model = cfg.get("deep_model") or "qwen2.5:7b"
@@ -436,7 +490,7 @@ def route_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
     )
     _save_json(STATE_PATH, state)
 
-    return {
+    result = {
         "route": route,
         "seed": seed,
         "model": model,
@@ -446,7 +500,26 @@ def route_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
         "reason": reason,
         "thought_id": thought_id,
         "source_thought_id": thought_id,
+        "source_family": family,
     }
+    _append_speech_debug({
+        "debug_stage": "router_decision",
+        "thought_id": thought_id,
+        "source": packet.get("source"),
+        "private_text": packet.get("private_text") or packet.get("thought_text"),
+        "mood": packet.get("mood"),
+        "pressure": packet.get("pressure"),
+        "novelty": packet.get("novelty"),
+        "speakability": packet.get("speakability"),
+        "decision": decision,
+        "decision_reason": reason,
+        "suppression_reason": None if decision == "speak" else reason,
+        "raw_line": line or None,
+        "final_line": line or None,
+        "voice_enabled": decision == "speak",
+        "display_enabled": decision == "speak",
+    })
+    return result
 
 
 def thought_packet_to_event(packet: Dict[str, Any], vision_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -465,6 +538,7 @@ def thought_packet_to_event(packet: Dict[str, Any], vision_state: Optional[Dict[
     event.update(packet)
     event["thought_id"] = thought_id
     event["source_thought_id"] = thought_id
+    event["source_family"] = packet.get("source_family") or ((packet.get("event_context") or {}).get("source_family"))
     event["text"] = packet.get("private_text") or packet.get("thought_text") or event.get("text") or ""
     event["source"] = packet.get("source") or event.get("source") or "vision"
 
@@ -472,14 +546,15 @@ def thought_packet_to_event(packet: Dict[str, Any], vision_state: Optional[Dict[
 
 
 def route_vision_state_file() -> Dict[str, Any]:
-    vision = _load_json(VISION_STATE_PATH, {})
+    vision_path = _vision_state_path()
+    vision = _load_json(vision_path, {})
     packet = vision.get("thought_packet") or {}
 
     if not packet.get("thought_id"):
         result = _suppress_missing_thought(packet)
         vision["router"] = result
         vision["speech_allowed"] = False
-        _save_json(VISION_STATE_PATH, vision)
+        _save_json(vision_path, vision)
         return result
 
     event = thought_packet_to_event(packet, vision)
@@ -493,5 +568,5 @@ def route_vision_state_file() -> Dict[str, Any]:
         vision["thought_packet"]["routed_line"] = result["line"]
         vision["thought_packet"]["thought_id"] = result["thought_id"]
 
-    _save_json(VISION_STATE_PATH, vision)
+    _save_json(vision_path, vision)
     return result

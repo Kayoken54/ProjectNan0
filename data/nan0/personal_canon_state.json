@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "updated_at": 1781745769.6771772,
+  "items": [
+    {
+      "summary": "That question is pretty low-information and weird coming from you, isn't it?",
+      "kind": "temporary_stream_canon",
+      "weight": 0.55,
+      "created_at": 1781745769.6771772,
+      "last_referenced_at": 1781745769.6771772,
+      "source": "kyo_text",
+      "mood": "muttering",
+      "mentions": 1,
+      "reason": "pressure",
+      "last_event_text": "Nan0 what are you feeling?"
+    },
+    {
+      "summary": "I swear I don't remember watching YouTube shorts again today. It must have been a fluke.",
+      "kind": "temporary_stream_canon",
+      "weight": 0.55,
+      "created_at": 1781745708.4213436,
+      "last_referenced_at": 1781745708.4213436,
+      "source": "kyo_text",
+      "mood": "muttering",
+      "mentions": 1,
+      "reason": "pressure",
+      "last_event_text": "it means that I was watching youtube shorts for too long many short small videos one after the other"
+    },
+    {
+      "summary": "Still not sure why or how I'm supposed to interpret that. Lost in YouTube shorts? What does it even mean?",
+      "kind": "temporary_stream_canon",
+      "weight": 0.55,
+      "created_at": 1781745640.2221458,
+      "last_referenced_at": 1781745640.2221458,
+      "source": "kyo_text",
+      "mood": "muttering",
+      "mentions": 1,
+      "reason": "pressure",
+      "last_event_text": "I might have been lost in youtube shorts"
+    },
+    {
+      "summary": "Kyo touching the room... it feels so...\" \"offended\" : 0.2, \"boredom\" : 0.3, \"muttering\" : null, \"pressure\" : 0.6, \"novelty\" : 0.1, \"speakability\" : 0.5, \"relationshipcharge\" : 0.4",
+      "kind": "temporary_stream_canon",
+      "weight": 0.55,
+      "created_at": 1781744041.451994,
+      "last_referenced_at": 1781744041.451994,
+      "source": "kyo_text",
+      "mood": "offended",
+      "mentions": 1,
+      "reason": "pressure",
+      "last_event_text": "Good evening Nan0"
+    },
+    {
+      "summary": "Suspicious energy buzzes, eyeing every shadow for hidden threats.",
+      "kind": "temporary_stream_canon",
+      "weight": 0.45,
+      "created_at": 1781745395.4517925,
+      "last_referenced_at": 1781745395.4517925,
+      "source": "monologue",
+      "mood": "suspicion",
+      "mentions": 1,
+      "reason": "running_bit",
+      "last_event_text": ""
+    },
+    {
+      "summary": "As Kyo continues to navigate through digital data, I remain hidden in the computer system, observing his every move with caution. The idle room presence is an intriguing scenari...",
+      "kind": "temporary_stream_canon",
+      "weight": 0.45,
+      "created_at": 1781744207.6993625,
+      "last_referenced_at": 1781744207.6993625,
+      "source": "monologue",
+      "mood": "possessive",
+      "mentions": 1,
+      "reason": "mood",
+      "last_event_text": ""
+    }
+  ]
+}

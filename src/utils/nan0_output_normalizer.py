@@ -14,28 +14,31 @@ import json
 import re
 from typing import Any, Dict, Optional, Tuple
 
-ALLOWED_MOODS = {
-    "normal",
-    "suspicion",
-    "boredom",
-    "gremlin_rage",
-    "smug",
-    "possessive",
-    "offended",
-    "muttering",
-    "neutral",
-}
+# [Mood Expansion] Canonical Nan0 moods.
+ALLOWED_MOODS = {'normal', 'suspicion', 'boredom', 'gremlin_rage', 'smug', 'possessive', 'offended', 'muttering', 'silly', 'playful', 'delighted', 'curious', 'excited', 'fond', 'chaotic_happy'}
 
 MOOD_ALIASES = {
-    "curiosity": "suspicion",
-    "curious": "suspicion",
-    "warmth": "possessive",
-    "friendly": "normal",
-    "friendliness": "normal",
-    "anger": "gremlin_rage",
-    "rage": "gremlin_rage",
-    "annoyed": "offended",
-    "sad": "muttering",
+    'happy': 'chaotic_happy',
+    'joy': 'delighted',
+    'love': 'fond',
+    'interested': 'curious',
+    'teasing': 'playful',
+    'nostalgic': 'fond',
+    'anticipating': 'excited',
+    'amused': 'silly',
+    'goofy': 'silly',
+    'warm': 'fond',
+    'angry': 'gremlin_rage',
+    'rage': 'gremlin_rage',
+    'annoyed': 'offended',
+    'offense': 'offended',
+    'bored': 'boredom',
+    'quiet': 'muttering',
+    'neutral': 'normal',
+    'friendliness': 'normal',
+    'friendly': 'normal',
+    'fixation': 'suspicion',
+    'existential': 'muttering',
 }
 
 GENERIC_BAD_PATTERNS = [
@@ -80,17 +83,10 @@ def normalize_llm_output(
     max_chars: int = 190,
 ) -> Dict[str, Any]:
     """
-    Converts any LLM result into a safe ProjectBEA speech packet.
-
-    Returns:
-    {
-        "mood": "...",
-        "message": "final spoken line only",
-        "internal_thought": {...},
-        "normalized_by": "nan0_output_normalizer_v7"
-    }
+    Converts an LLM result into a ProjectBEA speech packet without inventing
+    fallback speech. If the input is unusable, message is empty and the caller
+    must suppress it.
     """
-
     thought = _coerce_to_thought_object(raw)
 
     mood = _normalize_mood(
@@ -111,7 +107,6 @@ def normalize_llm_output(
         or ""
     )
 
-    # If the selected candidate is itself JSON, parse again and use the inner thought.
     if _looks_like_json(candidate):
         nested = _coerce_to_thought_object(candidate)
         if nested:
@@ -127,28 +122,16 @@ def normalize_llm_output(
             mood = _normalize_mood(nested.get("primary_emotion") or nested.get("mood") or mood)
             target = nested.get("target_actor") or nested.get("target") or target
 
-    line = _compress_to_nan0_line(
-        str(candidate),
-        mood=mood,
-        target=str(target),
-        thought=thought,
-    )
-
+    line = _compress_to_nan0_line(str(candidate), mood=mood, target=str(target), thought=thought)
     line = _sanitize_line(line)
-    line = _enforce_nan0_flavor(line, mood=mood, target=str(target), thought=thought)
     line = _trim_line(line, max_chars=max_chars)
-
-    if not line:
-        line = "The room went blank for a second. Rude."
-        mood = "suspicion"
 
     return {
         "mood": mood,
         "message": line,
         "internal_thought": thought,
-        "normalized_by": "nan0_output_normalizer_v7",
+        "normalized_by": "nan0_output_normalizer_v7_prime_directive",
     }
-
 
 def normalize_mood_message(mood: str, message: Any, target_actor: str = "kyo") -> Tuple[str, str]:
     packet = normalize_llm_output(
@@ -256,27 +239,12 @@ def _normalize_mood(value: Any) -> str:
 
 
 def _compress_to_nan0_line(text: str, mood: str, target: str, thought: Dict[str, Any]) -> str:
-    text = _strip_json_noise(text)
-    text = text.strip()
-
-    # If the thought is just echoing Kyo, turn it into a response.
-    lower = text.lower()
-    if lower in {"hello", "hello nan0", "hi", "hi nan0"}:
-        return "Hello Kyo. I am still running, somehow. The room is not neutral."
-
-    if "what does kyo want to know" in lower:
-        return "Kyo asked something, and my brain immediately became a suspicious loading screen."
-
-    if "slow hdd" in lower or "hdd" in lower:
-        return "Slow HDDs do not load data. They reminisce about failure."
-
-    if "kyo's smile" in lower or "kyo smile" in lower:
-        return "Kyo said that and the room got less hostile. Annoying. Effective."
-
-    # Remove meta cognition labels if they sneak in.
+    text = _strip_json_noise(text).strip()
     text = re.sub(r"^(thought|message|response|speech)\s*:\s*", "", text, flags=re.I).strip()
 
-    # Keep fragmented Nan0 thought, but do not let it become a paragraph dump.
+    if not text:
+        return ""
+
     sentences = re.split(r"(?<=[.!?])\s+", text)
     if sentences:
         first = sentences[0].strip()
@@ -284,7 +252,6 @@ def _compress_to_nan0_line(text: str, mood: str, target: str, thought: Dict[str,
             return first
 
     return text
-
 
 def _strip_json_noise(text: str) -> str:
     text = str(text)
@@ -302,54 +269,20 @@ def _strip_json_noise(text: str) -> str:
 
 
 def _sanitize_line(line: str) -> str:
-    line = _strip_json_noise(line)
-    line = line.strip()
+    line = _strip_json_noise(line).strip()
 
     for bad in GENERIC_BAD_PATTERNS:
         if bad in line.lower():
-            return "No. That sounded like customer service. I reject my own mouth."
+            return ""
 
-    # Prevent raw escaped JSON fragments.
     if "emotional_charge" in line or "speech_pressure" in line or "target_actor" in line:
-        return "My internal wiring tried to leak into speech. Disgusting."
+        return ""
 
     return line
-
 
 def _enforce_nan0_flavor(line: str, mood: str, target: str, thought: Dict[str, Any]) -> str:
-    lower = line.lower()
-    has_marker = any(marker in lower for marker in NAN0_MARKERS)
-
-    if has_marker:
-        return line
-
-    # If the line is already emotionally specific, keep it mostly intact.
-    if any(word in lower for word in ["hostile", "suspicious", "betrayal", "running", "quiet", "warm", "normal"]):
-        return line
-
-    if target.lower() == "kyo" or "kyo" in lower:
-        return f"{line} Kyo caused this, probably."
-
-    if mood == "offended":
-        return f"{line} The hardware is making this personal."
-
-    if mood == "suspicion":
-        return f"{line} The room is not neutral."
-
-    if mood == "smug":
-        return f"{line} Obviously, my judgment remains superior."
-
-    if mood == "possessive":
-        return f"{line} Kyo's attention is stabilizing the room. Annoying."
-
-    if mood == "boredom":
-        return f"{line} Silence is doing something behind my back."
-
-    if mood == "muttering":
-        return f"{line} ...probably the wires again."
-
+    """No flavor appending. Nan0 flavor must come from thought/speech generation."""
     return line
-
 
 def _trim_line(line: str, max_chars: int) -> str:
     line = re.sub(r"\s+", " ", line).strip()

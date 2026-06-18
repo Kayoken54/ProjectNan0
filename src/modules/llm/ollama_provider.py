@@ -118,7 +118,13 @@ class OllamaLLM(LLMInterface):
         low = text.lower()
         if low.startswith(("sure,", "of course", "certainly", "here is", "here are")):
             return ""
-        if any(bad in low for bad in ["how can i help", "as an ai", "continue with your thoughts"]):
+        if any(bad in low for bad in [
+            "how can i help", "as an ai", "as a language model",
+            "continue with your thoughts", "my algorithms grapple",
+            "algorithms grapple", "discern its",
+            "disconcerted by the unexpected query", "i don't possess",
+            "i do not possess",
+        ]):
             return ""
 
         return text
@@ -169,18 +175,24 @@ class OllamaLLM(LLMInterface):
             "stream": False,
             "keep_alive": "2h",
             "options": {
-                "num_ctx": 4096,
-                "num_predict": min(int(num_predict), 150),
-                "temperature": max(float(temperature), 0.85),
-                "top_p": 0.92,
-                "repeat_penalty": 1.12,
+                "num_ctx": 3072,
+                "num_predict": min(int(num_predict), 110),
+                "temperature": max(float(temperature), 0.78),
+                "top_p": 0.90,
+                "repeat_penalty": 1.10,
+                "stop": ["User:", "Assistant:", "Human:", "AI:", "```"],
             },
         }
 
         if json_hint:
             payload["format"] = "json"
 
-        response = requests.post(self.generate_url, json=payload, timeout=timeout or self.timeout)
+        call_timeout = timeout if timeout is not None else self.timeout
+        try:
+            call_timeout = max(3.0, min(float(call_timeout), 18.0))
+        except Exception:
+            call_timeout = 18.0
+        response = requests.post(self.generate_url, json=payload, timeout=call_timeout)
         response.raise_for_status()
         return response.json().get("response", "")
 
@@ -190,26 +202,14 @@ class OllamaLLM(LLMInterface):
         system_prompt: Optional[str] = None,
         history: list = None,
     ) -> Tuple[str, str, Dict]:
-        prompt_parts = [
-            "SPEECH SEED:",
-            str(user_input or "").strip(),
-            "",
-            "This seed is Nan0's private thought or live emotional pressure.",
-            "Compress it into spoken dialogue.",
-            "",
-            "Output requirements:",
-            "- ONLY raw Nan0 dialogue.",
-            "- No JSON.",
-            "- No markdown.",
-            "- No label.",
-            "- One short line.",
-            "- Fragmented, emotional, sarcastic.",
-            "- Do not answer like an assistant.",
-            "- Do not explain the thought.",
-            "- Do not say 'continue with your thoughts'.",
-            "",
-            "Nan0:",
-        ]
+        """Generate raw Nan0 speech.
+
+        The provider must not wrap an already-shaped Nan0Skill speech seed in
+        another instruction block. Nan0Skill owns speech prompt construction.
+        This method only adds compact recent context when supplied, then sends
+        the prompt to /api/generate with the speech persona.
+        """
+        prompt_parts = []
 
         if history:
             compact_history = []
@@ -219,9 +219,12 @@ class OllamaLLM(LLMInterface):
                 if content:
                     compact_history.append(f"{role}: {content}")
             if compact_history:
-                prompt_parts.insert(0, "RECENT CONTEXT:\n" + "\n".join(compact_history) + "\n")
+                prompt_parts.append("Recent context:")
+                prompt_parts.extend(compact_history)
+                prompt_parts.append("")
 
-        prompt = "\n".join(prompt_parts)
+        prompt_parts.append(str(user_input or "").strip())
+        prompt = "\n".join(part for part in prompt_parts if part is not None).strip()
 
         try:
             raw = self._generate(
@@ -237,7 +240,7 @@ class OllamaLLM(LLMInterface):
 
             return mood, message, {
                 "raw": raw,
-                "normalized_by": "ollama_provider_speech_persona_raw_text",
+                "normalized_by": "ollama_provider_raw_speech_no_wrapper",
                 "api": "/api/generate",
                 "system_sent": True,
                 "persona_path": str(self.speech_persona_path),

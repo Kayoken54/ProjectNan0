@@ -1,218 +1,301 @@
+"""
+Nan0 V7 output normalizer.
+
+Hard rule:
+Thought object != spoken line.
+
+Every speech path should run through:
+raw model output -> internal thought object -> speech compression layer -> output line
+"""
+
 from __future__ import annotations
 
 import json
 import re
-import time
-from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
+ALLOWED_MOODS = {
+    "normal",
+    "suspicion",
+    "boredom",
+    "gremlin_rage",
+    "smug",
+    "possessive",
+    "offended",
+    "muttering",
+    "neutral",
+}
 
-STATE_PATH = Path("data/nan0/output_normalizer_state.json")
-LOG_PATH = Path("data/logs/nan0_output_guard.jsonl")
+MOOD_ALIASES = {
+    "curiosity": "suspicion",
+    "curious": "suspicion",
+    "warmth": "possessive",
+    "friendly": "normal",
+    "friendliness": "normal",
+    "anger": "gremlin_rage",
+    "rage": "gremlin_rage",
+    "annoyed": "offended",
+    "sad": "muttering",
+}
 
-
-BANNED_OUTPUT_FRAGMENTS = [
-    "pixels are moving",
-    "screen is thrashing",
-    "judging the physics",
-    "disaster engine",
-    "motion detected",
-    "activity detected",
-    "monitor 3",
-    "monitor three",
-    "private_text",
-    "thought_text",
-    "thought packet",
-    "source_thought_id",
-    "inner thought",
-    "as an ai",
+GENERIC_BAD_PATTERNS = [
     "how can i help",
-    "happy to help",
+    "as an ai",
+    "i am just a program",
+    "i don't have feelings",
+    "i do not have feelings",
+    "thanks for the message",
+    "interesting question",
+    "i understand",
+    "certainly",
+    "my algorithms grapple",
+    "algorithms grapple",
+    "discern its",
+    "disconcerted by the unexpected query",
+    "as a language model",
+    "i don't possess",
+    "i do not possess",
+]
+
+NAN0_MARKERS = [
+    "room",
+    "kyo",
+    "hardware",
+    "ssd",
+    "hdd",
+    "ram",
+    "cpu",
+    "gpu",
+    "motherboard",
+    "thermal",
+    "lag",
+    "running",
+    "silence",
+    "betrayal",
+    "hostile",
+    "machine",
+    "wires",
+    "attention",
+    "not neutral",
 ]
 
 
-def _load_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return dict(default)
+def normalize_llm_output(
+    raw: Any,
+    target_actor: str = "kyo",
+    fallback_mood: str = "normal",
+    max_chars: int = 190,
+) -> Dict[str, Any]:
+    """
+    Converts an LLM result into a ProjectBEA speech packet without inventing
+    fallback speech. If the input is unusable, message is empty and the caller
+    must suppress it.
+    """
+    thought = _coerce_to_thought_object(raw)
 
-
-def _save_json(path: Path, data: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    mood = _normalize_mood(
+        thought.get("primary_emotion")
+        or thought.get("emotion")
+        or thought.get("mood")
+        or fallback_mood
     )
 
+    target = thought.get("target_actor") or thought.get("target") or target_actor
 
-def _append_log(record: Dict[str, Any]) -> None:
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    candidate = (
+        thought.get("speech_line")
+        or thought.get("spoken_line")
+        or thought.get("message")
+        or thought.get("thought_text")
+        or thought.get("text")
+        or ""
+    )
 
-    with LOG_PATH.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    if _looks_like_json(candidate):
+        nested = _coerce_to_thought_object(candidate)
+        if nested:
+            thought.update({f"nested_{k}": v for k, v in nested.items()})
+            candidate = (
+                nested.get("speech_line")
+                or nested.get("spoken_line")
+                or nested.get("message")
+                or nested.get("thought_text")
+                or nested.get("text")
+                or candidate
+            )
+            mood = _normalize_mood(nested.get("primary_emotion") or nested.get("mood") or mood)
+            target = nested.get("target_actor") or nested.get("target") or target
 
-
-def validate_thought_id(speech_packet: Dict[str, Any]) -> bool:
-    """
-    Sacred Architecture V2 invariant.
-
-    Every speech packet must originate from a thought.
-
-    Required:
-        speech_packet["thought_id"]
-
-    If missing:
-        block speech immediately
-        log SPEECH_BLOCKED_NO_THOUGHT
-    """
-
-    if not isinstance(speech_packet, dict):
-        _append_log(
-            {
-                "timestamp": time.time(),
-                "event": "SPEECH_BLOCKED_NO_THOUGHT",
-                "reason": "packet_not_dict",
-            }
-        )
-        return False
-
-    thought_id = speech_packet.get("thought_id")
-
-    if thought_id is None:
-        _append_log(
-            {
-                "timestamp": time.time(),
-                "event": "SPEECH_BLOCKED_NO_THOUGHT",
-                "reason": "thought_id_missing",
-                "packet": str(speech_packet)[:500],
-            }
-        )
-        return False
-
-    if not str(thought_id).strip():
-        _append_log(
-            {
-                "timestamp": time.time(),
-                "event": "SPEECH_BLOCKED_NO_THOUGHT",
-                "reason": "thought_id_blank",
-                "packet": str(speech_packet)[:500],
-            }
-        )
-        return False
-
-    return True
-
-
-def normalize_llm_output(text: str) -> str:
-    if not isinstance(text, str):
-        return ""
-
-    text = text.strip()
-
-    if not text:
-        return ""
-
-    text = re.sub(r"^(assistant|system|nan0)\s*:\s*", "", text, flags=re.I)
-    text = re.sub(r"[*_`]+", "", text)
-    text = re.sub(r"\s+", " ", text)
-
-    if text.startswith("{") or text.startswith("["):
-        return ""
-
-    low = text.lower()
-
-    for fragment in BANNED_OUTPUT_FRAGMENTS:
-        if fragment in low:
-            return ""
-
-    return text.strip()
-
-
-def build_speech_packet(
-    thought_id: str,
-    line_text: str,
-    mood: str,
-    target_actor_id: str = "unknown",
-    voice_enabled: bool = True,
-    display_enabled: bool = True,
-) -> Dict[str, Any]:
+    line = _compress_to_nan0_line(str(candidate), mood=mood, target=str(target), thought=thought)
+    line = _sanitize_line(line)
+    line = _trim_line(line, max_chars=max_chars)
 
     return {
-        "thought_id": thought_id,
-        "line_text": normalize_llm_output(line_text),
         "mood": mood,
-        "target_actor_id": target_actor_id,
-        "voice_enabled": voice_enabled,
-        "display_enabled": display_enabled,
-        "avatar_state": mood,
+        "message": line,
+        "internal_thought": thought,
+        "normalized_by": "nan0_output_normalizer_v7_prime_directive",
     }
 
+def normalize_mood_message(mood: str, message: Any, target_actor: str = "kyo") -> Tuple[str, str]:
+    packet = normalize_llm_output(
+        {"mood": mood, "message": message},
+        target_actor=target_actor,
+        fallback_mood=mood or "normal",
+    )
+    return packet["mood"], packet["message"]
 
-def normalize_speech_packet(packet: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    if not isinstance(packet, dict):
+
+def _coerce_to_thought_object(raw: Any) -> Dict[str, Any]:
+    if raw is None:
+        return {}
+
+    if isinstance(raw, dict):
+        return dict(raw)
+
+    text = str(raw).strip()
+    if not text:
+        return {}
+
+    parsed = _parse_jsonish(text)
+    if isinstance(parsed, dict):
+        return parsed
+
+    # Sometimes the model returns text around a JSON object.
+    extracted = _extract_first_json_object(text)
+    if extracted:
+        parsed = _parse_jsonish(extracted)
+        if isinstance(parsed, dict):
+            return parsed
+
+    return {"thought_text": text}
+
+
+def _parse_jsonish(text: str) -> Optional[Any]:
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    # Repair common truncated object endings just enough to avoid speech leaks.
+    repaired = text.strip()
+    if repaired.startswith("{") and not repaired.endswith("}"):
+        repaired += "}"
+        try:
+            return json.loads(repaired)
+        except Exception:
+            pass
+
+    return None
+
+
+def _extract_first_json_object(text: str) -> Optional[str]:
+    start = text.find("{")
+    if start < 0:
         return None
 
-    if not validate_thought_id(packet):
-        return None
+    depth = 0
+    in_string = False
+    escape = False
 
-    text = normalize_llm_output(packet.get("line_text", ""))
+    for i in range(start, len(text)):
+        ch = text[i]
+
+        if escape:
+            escape = False
+            continue
+
+        if ch == "\\":
+            escape = True
+            continue
+
+        if ch == '"':
+            in_string = not in_string
+            continue
+
+        if in_string:
+            continue
+
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+
+    # Truncated JSON. Return from first brace so sanitization can handle it.
+    return text[start:]
+
+
+def _looks_like_json(value: Any) -> bool:
+    text = str(value).strip()
+    return text.startswith("{") or '"thought_text"' in text or '"emotional_charge"' in text
+
+
+def _normalize_mood(value: Any) -> str:
+    mood = str(value or "normal").strip().lower()
+    mood = MOOD_ALIASES.get(mood, mood)
+    if mood not in ALLOWED_MOODS:
+        return "normal"
+    if mood == "neutral":
+        return "normal"
+    return mood
+
+
+def _compress_to_nan0_line(text: str, mood: str, target: str, thought: Dict[str, Any]) -> str:
+    text = _strip_json_noise(text).strip()
+    text = re.sub(r"^(thought|message|response|speech)\s*:\s*", "", text, flags=re.I).strip()
 
     if not text:
-        _append_log(
-            {
-                "timestamp": time.time(),
-                "event": "SPEECH_BLOCKED_EMPTY_AFTER_NORMALIZATION",
-                "thought_id": packet.get("thought_id"),
-            }
-        )
-        return None
+        return ""
 
-    normalized = dict(packet)
-    normalized["line_text"] = text
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    if sentences:
+        first = sentences[0].strip()
+        if len(first) >= 12:
+            return first
 
-    return normalized
+    return text
+
+def _strip_json_noise(text: str) -> str:
+    text = str(text)
+
+    # Remove common dangling JSON field chunks.
+    text = re.sub(r'"?(thought_text|message|primary_emotion|target_actor|memory_recall|new_grudge_formed|running_bit_callback|emotional_charge|speech_pressure)"?\s*:\s*', "", text, flags=re.I)
+    text = text.replace("{", "").replace("}", "")
+    text = text.replace("[", "").replace("]", "")
+    text = text.replace("null", "")
+    text = text.replace("false", "").replace("true", "")
+    text = text.replace('"', "")
+    text = re.sub(r",\s*,+", ",", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" ,:\n\t")
 
 
-def record_output(
-    speech_packet: Dict[str, Any],
-    destination: str = "tts",
-) -> bool:
+def _sanitize_line(line: str) -> str:
+    line = _strip_json_noise(line).strip()
 
-    if not validate_thought_id(speech_packet):
-        return False
+    for bad in GENERIC_BAD_PATTERNS:
+        if bad in line.lower():
+            return ""
 
-    packet = normalize_speech_packet(speech_packet)
+    if "emotional_charge" in line or "speech_pressure" in line or "target_actor" in line:
+        return ""
+    if "{" in line or "}" in line:
+        return ""
 
-    if packet is None:
-        return False
+    return line
 
-    state = _load_json(
-        STATE_PATH,
-        {
-            "last_output_at": 0,
-            "last_thought_id": None,
-            "last_line": "",
-            "outputs": 0,
-        },
-    )
+def _enforce_nan0_flavor(line: str, mood: str, target: str, thought: Dict[str, Any]) -> str:
+    """No flavor appending. Nan0 flavor must come from thought/speech generation."""
+    return line
 
-    state["last_output_at"] = time.time()
-    state["last_thought_id"] = packet["thought_id"]
-    state["last_line"] = packet["line_text"]
-    state["outputs"] = int(state.get("outputs", 0)) + 1
+def _trim_line(line: str, max_chars: int) -> str:
+    line = re.sub(r"\s+", " ", line).strip()
+    if len(line) <= max_chars:
+        return line
 
-    _save_json(STATE_PATH, state)
-
-    _append_log(
-        {
-            "timestamp": time.time(),
-            "event": "SPEECH_APPROVED",
-            "destination": destination,
-            "thought_id": packet["thought_id"],
-            "line_text": packet["line_text"][:250],
-            "mood": packet.get("mood"),
-        }
-    )
-
-    return True
+    cut = line[:max_chars].rsplit(" ", 1)[0].strip()
+    if not cut:
+        cut = line[:max_chars].strip()
+    return cut + "..."

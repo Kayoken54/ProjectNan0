@@ -1,8 +1,8 @@
 {
-  "timestamp": 1780612351.1528938,
-  "pressure": 0.0,
-  "presence_mode": "autonomous_happy",
-  "emotional_mode": "normal",
+  "timestamp": 1781745782.809117,
+  "pressure": 0.965,
+  "presence_mode": "with_kyo",
+  "emotional_mode": "smug",
   "last_seen_summary": "the screen is quiet",
   "last_fast_state": {
     "screen_state": "stable",
@@ -13,11 +13,191 @@
     "semantic_activity": "high motion gameplay",
     "semantic_confidence": 0.45
   },
-  "last_spoken_at": 1780612331.3104239,
-  "last_kyo_heard_at": 0.0,
+  "last_spoken_at": 1781745769.6872396,
+  "last_kyo_heard_at": 1781745731.6748931,
   "last_discord_heard_at": 0.0,
-  "recent_events": [],
+  "recent_events": [
+    {
+      "time": 1781745602.35,
+      "source": "kyo_text",
+      "source_family": "kyo",
+      "speaker": "Kyo",
+      "source_actor_id": "kyo",
+      "text": "I might have been lost in youtube shorts",
+      "addressed_to_nan0": true
+    },
+    {
+      "time": 1781745670.3,
+      "source": "kyo_text",
+      "source_family": "kyo",
+      "speaker": "Kyo",
+      "source_actor_id": "kyo",
+      "text": "it means that I was watching youtube shorts for too long many short small videos one after the other",
+      "addressed_to_nan0": true
+    },
+    {
+      "time": 1781745731.68,
+      "source": "kyo_text",
+      "source_family": "kyo",
+      "speaker": "Kyo",
+      "source_actor_id": "kyo",
+      "text": "Nan0 what are you feeling?",
+      "addressed_to_nan0": true
+    }
+  ],
   "recent_lines": [
-    "i am here real inputs only no fake friends in my wires"
+    "i am here no fake friends in my wires",
+    "suspicious energy buzzes eyeing every shadow for hidden threats",
+    "just a minute ago she was checking her phone notifications",
+    "still not sure why or how i m supposed to interpret that lost in youtube shorts what does it even mean",
+    "i swear i don t remember watching youtube shorts again today it must have been a fluke",
+    "that question is pretty low information and weird coming from you isn t it"
+  ],
+  "active_question": {
+    "actor_id": "kyo",
+    "speaker": "Kyo",
+    "source": "kyo_text",
+    "event_id": "kyo_text_815ac2cad7c944e8820a73a41f065d9d",
+    "text": "Nan0 what are you feeling?",
+    "created_at": 1781745731.6763961,
+    "updated_at": 1781745731.6763961,
+    "expires_at": 1781745911.6763961,
+    "resolved": false
+  },
+  "active_obsessions": [
+    {
+      "topic": "kyo",
+      "interest": 1.0,
+      "created_at": 1781745640.2221458,
+      "mentions": 3,
+      "last_referenced_at": 1781745769.6771772,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "That question is pretty low-information and weird coming from you, isn't it?"
+    },
+    {
+      "topic": "youtube",
+      "interest": 0.734,
+      "created_at": 1781745640.2221458,
+      "mentions": 2,
+      "last_referenced_at": 1781745708.4213436,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "I swear I don't remember watching YouTube shorts again today. It must have been a fluke."
+    },
+    {
+      "topic": "shorts",
+      "interest": 0.734,
+      "created_at": 1781745640.2221458,
+      "mentions": 2,
+      "last_referenced_at": 1781745708.4213436,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "I swear I don't remember watching YouTube shorts again today. It must have been a fluke."
+    },
+    {
+      "topic": "are",
+      "interest": 0.38,
+      "created_at": 1781745769.6771772,
+      "mentions": 1,
+      "last_referenced_at": 1781745769.6771772,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "That question is pretty low-information and weird coming from you, isn't it?"
+    },
+    {
+      "topic": "feeling",
+      "interest": 0.38,
+      "created_at": 1781745769.6771772,
+      "mentions": 1,
+      "last_referenced_at": 1781745769.6771772,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "That question is pretty low-information and weird coming from you, isn't it?"
+    },
+    {
+      "topic": "that",
+      "interest": 0.38,
+      "created_at": 1781745769.6771772,
+      "mentions": 1,
+      "last_referenced_at": 1781745769.6771772,
+      "last_source": "kyo_text",
+      "last_mood": "muttering",
+      "last_thought": "That question is pretty low-information and weird coming from you, isn't it?"
+    }
+  ],
+  "personal_canon": [
+    {
+      "summary": "That question is pretty low-information and weird coming from you, isn't it?",
+      "kind": "temporary_stream_canon",
+      "weight": 0.55,
+      "created_at": 1781745769.6771772,
+      "last_referenced_at": 1781745769.6771772,
+      "source": "kyo_text",
+      "mood": "muttering",
+      "mentions": 1,
+      "reason": "pressure",
+      "last_event_text": "Nan0 what are you feeling?"
+    },
+    {
+      "summary": "I swear I don't remember watching YouTube shorts again today. It must have been a fluke.",
+      "kind": "temporary_stream_canon",
+      "weight": 0.55,
+      "created_at": 1781745708.4213436,
+      "last_referenced_at": 1781745708.4213436,
+      "source": "kyo_text",
+      "mood": "muttering",
+      "mentions": 1,
+      "reason": "pressure",
+      "last_event_text": "it means that I was watching youtube shorts for too long many short small videos one after the other"
+    },
+    {
+      "summary": "Still not sure why or how I'm supposed to interpret that. Lost in YouTube shorts? What does it even mean?",
+      "kind": "temporary_stream_canon",
+      "weight": 0.55,
+      "created_at": 1781745640.2221458,
+      "last_referenced_at": 1781745640.2221458,
+      "source": "kyo_text",
+      "mood": "muttering",
+      "mentions": 1,
+      "reason": "pressure",
+      "last_event_text": "I might have been lost in youtube shorts"
+    },
+    {
+      "summary": "Kyo touching the room... it feels so...\" \"offended\" : 0.2, \"boredom\" : 0.3, \"muttering\" : null, \"pressure\" : 0.6, \"novelty\" : 0.1, \"speakability\" : 0.5, \"relationshipcharge\" : 0.4",
+      "kind": "temporary_stream_canon",
+      "weight": 0.55,
+      "created_at": 1781744041.451994,
+      "last_referenced_at": 1781744041.451994,
+      "source": "kyo_text",
+      "mood": "offended",
+      "mentions": 1,
+      "reason": "pressure",
+      "last_event_text": "Good evening Nan0"
+    },
+    {
+      "summary": "Suspicious energy buzzes, eyeing every shadow for hidden threats.",
+      "kind": "temporary_stream_canon",
+      "weight": 0.45,
+      "created_at": 1781745395.4517925,
+      "last_referenced_at": 1781745395.4517925,
+      "source": "monologue",
+      "mood": "suspicion",
+      "mentions": 1,
+      "reason": "running_bit",
+      "last_event_text": ""
+    },
+    {
+      "summary": "As Kyo continues to navigate through digital data, I remain hidden in the computer system, observing his every move with caution. The idle room presence is an intriguing scenari...",
+      "kind": "temporary_stream_canon",
+      "weight": 0.45,
+      "created_at": 1781744207.6993625,
+      "last_referenced_at": 1781744207.6993625,
+      "source": "monologue",
+      "mood": "possessive",
+      "mentions": 1,
+      "reason": "mood",
+      "last_event_text": ""
+    }
   ]
 }

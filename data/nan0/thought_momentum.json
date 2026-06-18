@@ -1,0 +1,68 @@
+{
+  "version": 2,
+  "updated_at": 1781745769.6771772,
+  "active_topic": "nan0_state",
+  "active_topic_strength": 1.0,
+  "active_topic_started_at": 1781745769.6771772,
+  "recent_subjects": [],
+  "last_private_mutter": "That question is pretty low-information and weird coming from you, isn't it?",
+  "last_kyo_topic": "",
+  "messages_since_kyo": 0,
+  "thread_notes": "Topic continuity may inform Nan0, but must not donate wording or hijack unrelated Kyo questions.",
+  "last_event_text": "Nan0 what are you feeling?",
+  "last_source": "kyo_text",
+  "stance_tags": [],
+  "confirmed_preferences": {},
+  "tentative_mentions": {},
+  "messages_in_thread": 1,
+  "topic_history": [
+    {
+      "at": 1781745769.6771772,
+      "topic": "nan0_state",
+      "source": "kyo_text",
+      "event_text": "Nan0 what are you feeling?"
+    },
+    {
+      "at": 1781745708.4213436,
+      "topic": "other",
+      "source": "kyo_text",
+      "event_text": "it means that I was watching youtube shorts for too long many short small videos one after the other"
+    },
+    {
+      "at": 1781745640.2221458,
+      "topic": "shorts",
+      "source": "kyo_text",
+      "event_text": "I might have been lost in youtube shorts"
+    },
+    {
+      "at": 1781745586.468129,
+      "topic": "mahjong",
+      "source": "monologue",
+      "event_text": ""
+    },
+    {
+      "at": 1781745395.4517925,
+      "topic": "mahjong",
+      "source": "monologue",
+      "event_text": ""
+    },
+    {
+      "at": 1781744249.0169349,
+      "topic": "mahjong",
+      "source": "discord_text",
+      "event_text": "do you like Mahjong?"
+    },
+    {
+      "at": 1781744207.6993625,
+      "topic": "evening",
+      "source": "monologue",
+      "event_text": ""
+    },
+    {
+      "at": 1781744041.451994,
+      "topic": "evening",
+      "source": "kyo_text",
+      "event_text": "Good evening Nan0"
+    }
+  ]
+}

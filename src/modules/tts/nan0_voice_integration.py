@@ -48,3 +48,21 @@ def prepare_nan0_tts_text(
         logger.info("Nan0 voice formatter: raw=%r spoken=%r mood=%r target=%r", raw_line, spoken_line, mood, target)
 
     return spoken_line
+
+
+# [Mood Expansion] Expression hints for avatar/rig layers. These are string hints only;
+# no polite/helpful behavior is introduced here.
+MOOD_TO_EXPRESSION = {
+    "silly": {"eyes": "eyes_wide", "mouth": "mouth_twitch", "pose": "head_tilt"},
+    "playful": {"eyes": "eyes_narrow", "mouth": "smirk", "pose": "lean_forward"},
+    "delighted": {"eyes": "eyes_soft", "mouth": "mouth_small", "pose": "slight_blush_begrudged"},
+    "curious": {"eyes": "eyes_focus", "mouth": "neutral", "pose": "head_tilt_ear_perk"},
+    "excited": {"eyes": "eyes_wide", "mouth": "mouth_open", "pose": "shake_slight"},
+    "fond": {"eyes": "eyes_half", "mouth": "mouth_small", "pose": "slow_blink"},
+    "chaotic_happy": {"eyes": "eyes_spin", "mouth": "mouth_grin_too_wide", "pose": "jitter"},
+}
+
+
+def expression_for_mood(mood: Optional[str]) -> Mapping[str, str]:
+    # [Mood Expansion] Runtime-safe expression lookup. Unknown moods return empty hints.
+    return MOOD_TO_EXPRESSION.get((mood or "").strip().lower(), {})
