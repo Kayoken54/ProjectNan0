@@ -1,10 +1,10 @@
-import concurrent.futures
 import json
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.modules.skills.base_skill import BaseSkill
+from src.core.events import EventCategory
 from src.modules.skills.implementations.nan0_thought_engine_v3 import generate_inner_thought_packet
 from src.utils.logger import get_logger
 
@@ -19,8 +19,8 @@ class Nan0VisionSkill(BaseSkill):
     - Vision may observe often.
     - Minor motion does not call the LLM.
     - Vision LLM interpretation is reserved for meaningful changes only.
-    - Vision LLM calls are timeout guarded because the thought engine is frozen and synchronous.
-    - If the thought engine is slow, unavailable, or unnecessary, vision uses local fallback.
+    - Vision never fabricates Nan0 thoughts from local templates.
+    - If the thought engine is unavailable, vision stays body/state only.
     """
 
     def initialize(self):
@@ -40,15 +40,13 @@ class Nan0VisionSkill(BaseSkill):
         self.silence_threshold = float(cfg.get("silence_threshold", 0.15))
 
         # Frozen-thought-engine protection.
+        # No ThreadPoolExecutor here: Nan0 cognition stays on the owned serial path.
+        # If the thought engine cannot return a real packet, vision does not speak.
         self.vision_llm_enabled = bool(cfg.get("vision_llm_enabled", True))
         self.vision_llm_timeout_seconds = float(cfg.get("vision_llm_timeout_seconds", 3.0))
         self.thought_engine_cooldown_seconds = float(cfg.get("thought_engine_cooldown_seconds", 15.0))
 
         self._shutdown_requested = False
-        self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="nan0_vision_thought",
-        )
 
         self.last_thought_time = 0.0
         self.last_combat_time = 0.0
@@ -73,11 +71,6 @@ class Nan0VisionSkill(BaseSkill):
 
     async def stop(self):
         self._shutdown_requested = True
-        try:
-            if getattr(self, "_executor", None):
-                self._executor.shutdown(wait=False, cancel_futures=True)
-        except Exception as exc:
-            logger.warning(f"Nan0VisionSkill executor shutdown warning: {exc}")
         await super().stop()
 
     async def update(self):
@@ -133,7 +126,7 @@ class Nan0VisionSkill(BaseSkill):
         if not thought_packet:
             return
 
-        self._emit_thought(thought_packet)
+        await self._emit_thought(thought_packet)
         self.last_thought_time = now
         self.thoughts_this_minute += 1
 
@@ -227,33 +220,55 @@ class Nan0VisionSkill(BaseSkill):
         brightness_delta = float(l1.get("brightness_delta", 0) or 0)
         combat = bool(l1.get("combat", False))
         menu_open = bool(l1.get("menu_open", False))
+        inventory_visible = bool(l1.get("inventory_visible", False))
         dark_scene = bool(l1.get("dark_scene", False))
+        major_change = bool(l1.get("major_change", False))
         game_ui = l1.get("game_ui_detected", "unknown")
 
         narrative_parts = []
+        event_type = "vision_state"
+        confidence = 0.35
 
         if combat:
             narrative_parts.append("The screen is in combat. Fast movement and high pressure.")
+            event_type = "vision_combat"
+            confidence = 0.72
+        elif major_change:
+            narrative_parts.append("A major visual change happened on screen.")
+            event_type = "vision_major_change"
+            confidence = 0.70
         elif motion > 0.5:
             narrative_parts.append("Everything on screen is moving fast.")
+            event_type = "vision_motion"
+            confidence = 0.58
         elif motion > 0.2:
             narrative_parts.append("Some movement caught my eye.")
+            event_type = "vision_motion"
+            confidence = 0.48
         else:
             narrative_parts.append("The screen is mostly still.")
 
-        if dark_scene and brightness_delta > 20:
-            narrative_parts.append("The screen went dark suddenly.")
+        if dark_scene or screen_state == "very_dark":
+            narrative_parts.append("The screen is dark.")
+            event_type = "vision_dark"
+            confidence = max(confidence, 0.62)
         elif brightness_delta > 30:
             narrative_parts.append("Brightness jumped hard.")
+            event_type = "vision_brightness"
+            confidence = max(confidence, 0.62)
         elif brightness_delta < -30:
             narrative_parts.append("Everything dimmed quickly.")
+            event_type = "vision_brightness"
+            confidence = max(confidence, 0.62)
         elif brightness_delta > 10:
             narrative_parts.append("The screen is getting brighter.")
         elif brightness_delta < -10:
             narrative_parts.append("The screen is getting darker.")
 
-        if menu_open:
+        if menu_open or inventory_visible:
             narrative_parts.append("A menu or UI layer appears to be open.")
+            event_type = "vision_menu"
+            confidence = max(confidence, 0.60)
 
         if game_ui == "coding":
             narrative_parts.append("Code or debugging appears to be on screen.")
@@ -265,26 +280,51 @@ class Nan0VisionSkill(BaseSkill):
             narrative_parts.append("A browser appears to be open.")
 
         narrative = " ".join(narrative_parts) if narrative_parts else "The screen changed, but the meaning is uncertain."
-
-        return {
-            "event_id": f"vision_{int(time.time() * 1000)}",
-            "source": "vision_stack_v1",
-            "speaker": "screen",
-            "source_actor_id": "screen",
-            "text": narrative,
-            "addressed_to_nan0": False,
-            "priority": "low",
-            "timestamp": time.time(),
+        payload = {
             "screen_state": screen_state,
             "motion_intensity": motion,
             "brightness": brightness,
             "brightness_delta": brightness_delta,
             "combat": combat,
             "menu_open": menu_open,
+            "inventory_visible": inventory_visible,
             "dark_scene": dark_scene,
+            "major_change": major_change,
             "game_ui_detected": game_ui,
             "semantic": l2,
+            "layer1_reflex": l1,
+            "layer2_semantic": l2,
         }
+
+        return {
+            "event_id": f"vision_{int(time.time() * 1000)}",
+            "source": "vision",
+            "source_family": "vision",
+            "event_type": event_type,
+            "speaker": "screen",
+            "source_actor_id": "screen",
+            "text": narrative,
+            "message": narrative,
+            "addressed_to_nan0": False,
+            "priority": 5,
+            "priority_label": "vision_or_external",
+            "confidence": confidence,
+            "timestamp": time.time(),
+            "stale_after_seconds": 8.0 if event_type in {"vision_motion", "vision_dark", "vision_major_change", "vision_combat"} else 20.0,
+            "screen_state": screen_state,
+            "motion_intensity": motion,
+            "brightness": brightness,
+            "brightness_delta": brightness_delta,
+            "combat": combat,
+            "menu_open": menu_open,
+            "inventory_visible": inventory_visible,
+            "dark_scene": dark_scene,
+            "major_change": major_change,
+            "game_ui_detected": game_ui,
+            "semantic": l2,
+            "payload": payload,
+        }
+
 
     def _vision_event_is_llm_worthy(self, l1: Dict[str, Any], now: float) -> bool:
         """Only meaningful vision changes are allowed to call the frozen thought engine."""
@@ -320,7 +360,7 @@ class Nan0VisionSkill(BaseSkill):
 
         return False
 
-    def _call_thought_engine_with_timeout(
+    def _call_thought_engine(
         self,
         event: Dict[str, Any],
         vision_context: Dict[str, Any],
@@ -331,45 +371,43 @@ class Nan0VisionSkill(BaseSkill):
             return None
 
         try:
-            future = self._executor.submit(
-                generate_inner_thought_packet,
-                event,
-                vision_context=vision_context,
-            )
-            return future.result(timeout=self.vision_llm_timeout_seconds)
-        except concurrent.futures.TimeoutError:
-            logger.warning(
-                f"Vision layer3 thought engine timed out after {self.vision_llm_timeout_seconds:.1f}s. Using fallback."
-            )
-            try:
-                future.cancel()
-            except Exception:
-                pass
-            return None
+            return generate_inner_thought_packet(event, vision_context=vision_context)
         except RuntimeError as exc:
-            if getattr(self, "_shutdown_requested", False):
-                return None
-            logger.warning(f"Vision layer3 thought engine unavailable: {exc}. Using fallback.")
+            if not getattr(self, "_shutdown_requested", False):
+                logger.warning(f"Vision layer3 thought engine unavailable: {exc}. Vision will stay silent.")
             return None
         except Exception as exc:
-            if getattr(self, "_shutdown_requested", False):
-                return None
-            logger.warning(f"Vision layer3 thought engine failed: {exc}. Using fallback.")
+            if not getattr(self, "_shutdown_requested", False):
+                logger.warning(f"Vision layer3 thought engine failed: {exc}. Vision will stay silent.")
             return None
 
     def _layer3(self, l1: Dict[str, Any], l2: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any]:
         """Generate Nan0's interpretation with throttled, timeout-safe thought engine access."""
         if getattr(self, "_shutdown_requested", False):
-            return self._layer3_fallback(l1, l2)
+            return self._layer3_silent(l1, l2)
 
         now = now or time.time()
 
         if not self._vision_event_is_llm_worthy(l1, now):
-            return self._layer3_fallback(l1, l2)
+            return self._layer3_silent(l1, l2)
 
         self.last_thought_engine_call_at = now
         event = self._build_vision_event(l1, l2)
-        packet = self._call_thought_engine_with_timeout(event, vision_context=l1)
+        vision_context = {
+            "screen_state": l1.get("screen_state"),
+            "motion_intensity": l1.get("motion_intensity"),
+            "brightness": l1.get("brightness"),
+            "brightness_delta": l1.get("brightness_delta"),
+            "combat": l1.get("combat"),
+            "menu_open": l1.get("menu_open"),
+            "inventory_visible": l1.get("inventory_visible"),
+            "dark_scene": l1.get("dark_scene"),
+            "major_change": l1.get("major_change"),
+            "game_ui_detected": l1.get("game_ui_detected"),
+            "layer1_reflex": l1,
+            "layer2_semantic": l2,
+        }
+        packet = self._call_thought_engine(event, vision_context=vision_context)
 
         if packet and packet.get("private_text"):
             suppression = packet.get("suppression_reason")
@@ -393,7 +431,7 @@ class Nan0VisionSkill(BaseSkill):
                 "thought_packet": packet,
             }
 
-        return self._layer3_fallback(l1, l2)
+        return self._layer3_silent(l1, l2)
 
     def _stakes_from_mood(self, mood: str) -> str:
         mapping = {
@@ -408,132 +446,125 @@ class Nan0VisionSkill(BaseSkill):
         }
         return mapping.get(mood, "low")
 
-    def _layer3_fallback(self, l1: Dict[str, Any], l2: Dict[str, Any]) -> Dict[str, Any]:
-        """Minimal fallback only when thought engine is unavailable, unnecessary, or shutdown is in progress."""
-        thoughtworthy, stakes, perceived, mood, seed = False, "low", "boring screen behavior", "muttering", ""
-
-        if l1.get("dark_scene") and l1.get("brightness_delta", 0) > 20:
-            thoughtworthy, stakes, perceived, mood, seed = (
-                True,
-                "suspicious",
-                "screen dropped into black",
-                "suspicion",
-                "Everything just fell into black. Hate that little trick.",
-            )
-        elif l1.get("combat"):
-            thoughtworthy, stakes, perceived, mood, seed = (
-                True,
-                "high",
-                "combat-shaped screen pressure",
-                "gremlin_rage",
-                "The screen is in combat. Kyo is either fighting something or feeding the disaster engine.",
-            )
+    def _layer3_silent(self, l1: Dict[str, Any], l2: Dict[str, Any]) -> Dict[str, Any]:
+        """Body/state-only fallback. Never creates scripted Nan0 speech or private thoughts."""
+        perceived = "vision_state_only"
+        if l1.get("combat"):
+            perceived = "combat_visible"
+        elif l1.get("dark_scene"):
+            perceived = "dark_scene_visible"
         elif l1.get("menu_open") or l1.get("inventory_visible"):
-            thoughtworthy, stakes, perceived, mood, seed = (
-                True,
-                "medium",
-                "Kyo is trapped in menus",
-                "smug",
-                "Menus. Again. Kyo is negotiating with rectangles like that ever helped anyone.",
-            )
+            perceived = "menu_visible"
         elif l1.get("major_change"):
-            thoughtworthy, stakes, perceived, mood, seed = (
-                True,
-                "medium",
-                "visual jump / scene change",
-                "suspicion",
-                "The screen snapped. Something changed too fast to be innocent.",
-            )
-        elif l1.get("motion_intensity", 0) > 0.25:
-            thoughtworthy, stakes, perceived, mood, seed = (
-                True,
-                "medium_low",
-                "active movement",
-                "muttering",
-                "The screen is moving hard. I am judging the physics and Kyo's choices.",
-            )
+            perceived = "major_visual_change"
         elif l1.get("game_ui_detected") == "coding":
-            thoughtworthy, stakes, perceived, mood, seed = (
-                True,
-                "medium",
-                "code/debug territory",
-                "offended",
-                "Code is on screen. The error gremlins are probably chewing wires again.",
-            )
+            perceived = "code_visible"
 
         return {
             "perceived_threat": perceived,
-            "emotional_stakes": stakes,
-            "ego_position": "superior_tiny_machine_observer",
-            "mood": mood,
-            "thought_seed": seed,
-            "thoughtworthy": thoughtworthy,
-            "speak_reason": "real_visual_change" if thoughtworthy else "none",
+            "emotional_stakes": "low",
+            "ego_position": "observer_only",
+            "mood": "muttering",
+            "thought_seed": "",
+            "thoughtworthy": False,
+            "speak_reason": "no_inner_thought_packet",
             "do_not_speak_if_only_silence": True,
         }
 
     def _thought_packet(self, l1: Dict[str, Any], l2: Dict[str, Any], l3: Dict[str, Any], now: float) -> Dict[str, Any]:
         engine_packet = l3.get("thought_packet")
-        if engine_packet and isinstance(engine_packet, dict) and engine_packet.get("private_text"):
-            return {
-                "thought_id": engine_packet.get("thought_id") or f"vision_thought_{int(now * 1000)}",
-                "created_at": now,
-                "thought_type": "game_read" if l1.get("combat") or l1.get("motion_intensity", 0) > 0.25 else "reaction",
-                "source": "vision_stack_v1",
-                "objective_observation": {
-                    "screen_state": l1.get("screen_state"),
-                    "motion_intensity": l1.get("motion_intensity"),
-                    "brightness": l1.get("brightness"),
-                    "brightness_delta": l1.get("brightness_delta"),
-                    "combat": l1.get("combat"),
-                    "menu_open": l1.get("menu_open"),
-                    "dark_scene": l1.get("dark_scene"),
-                    "game_ui_detected": l1.get("game_ui_detected"),
-                },
-                "semantic_read": l2,
-                "nan0_interpretation": l3.get("perceived_threat"),
-                "thought_text": l3.get("thought_seed"),
-                "private_text": engine_packet.get("private_text"),
-                "pressure": engine_packet.get("pressure", 0.45),
-                "speakability": engine_packet.get("speakability", 0.45),
-                "suppression_reason": engine_packet.get("suppression_reason"),
-                "mood": l3.get("mood", "muttering"),
-                "target_actor": engine_packet.get("target_actor") or "kyo",
-                "target_actor_id": engine_packet.get("target_actor_id") or engine_packet.get("target_actor") or "kyo",
-                "_engine_packet": engine_packet,
-            }
+        if not (engine_packet and isinstance(engine_packet, dict)):
+            return {}
 
-        return {
-            "thought_id": l3.get("thought_event_id") or f"vision_thought_{int(now * 1000)}",
-            "created_at": now,
-            "thought_type": "game_read" if l1.get("combat") or l1.get("motion_intensity", 0) > 0.25 else "reaction",
-            "source": "vision_stack_v1",
-            "objective_observation": {
-                "screen_state": l1.get("screen_state"),
-                "motion_intensity": l1.get("motion_intensity"),
-                "brightness": l1.get("brightness"),
-                "brightness_delta": l1.get("brightness_delta"),
-                "combat": l1.get("combat"),
-                "menu_open": l1.get("menu_open"),
-                "dark_scene": l1.get("dark_scene"),
-                "game_ui_detected": l1.get("game_ui_detected"),
-            },
+        thought_id = engine_packet.get("thought_id")
+        private_text = engine_packet.get("private_text") or engine_packet.get("thought_text")
+        if not thought_id or not private_text:
+            return {}
+
+        packet = dict(engine_packet)
+        packet["thought_id"] = thought_id
+        packet["source"] = "vision_stack_v1"
+        packet["private_text"] = private_text
+        packet.setdefault("thought_text", private_text)
+        packet.setdefault("created_at", now)
+        packet.setdefault("thought_type", "vision_reaction")
+        packet.setdefault("target_actor_id", engine_packet.get("target_actor_id") or "screen")
+        packet.setdefault("mood", l3.get("mood", "muttering"))
+
+        objective_observation = {
+            "screen_state": l1.get("screen_state"),
+            "motion_intensity": l1.get("motion_intensity"),
+            "brightness": l1.get("brightness"),
+            "brightness_delta": l1.get("brightness_delta"),
+            "combat": l1.get("combat"),
+            "menu_open": l1.get("menu_open"),
+            "inventory_visible": l1.get("inventory_visible"),
+            "dark_scene": l1.get("dark_scene"),
+            "major_change": l1.get("major_change"),
+            "game_ui_detected": l1.get("game_ui_detected"),
+        }
+        vision_context = {
+            "objective_observation": objective_observation,
             "semantic_read": l2,
             "nan0_interpretation": l3.get("perceived_threat"),
-            "thought_text": l3.get("thought_seed"),
-            "private_text": l3.get("thought_seed"),
-            "pressure": 0.75 if l3.get("emotional_stakes") in ("high", "suspicious") else 0.45,
-            "speakability": 0.45 if l3.get("thoughtworthy") else 0.0,
-            "suppression_reason": None if l3.get("thoughtworthy") else "vision_not_thoughtworthy",
-            "mood": l3.get("mood", "muttering"),
-            "target_actor": "kyo",
-            "target_actor_id": "kyo",
+            "layer1_reflex": l1,
+            "layer2_semantic": l2,
         }
 
-    def _emit_thought(self, thought_packet: Dict[str, Any]):
-        if self.context and hasattr(self.context, "emit_event"):
-            self.context.emit_event("nan0_thought_generated", thought_packet)
-            logger.info(f"Vision thought emitted: {thought_packet.get('thought_id', 'unknown')}")
+        packet["objective_observation"] = objective_observation
+        packet["semantic_read"] = l2
+        packet["nan0_interpretation"] = l3.get("perceived_threat")
+        packet["vision_context"] = vision_context
+
+        event_context = dict(packet.get("event_context") or {})
+        event_context.update({
+            "source": "vision_stack_v1",
+            "source_family": "vision",
+            "speaker": "screen",
+            "source_actor_id": "screen",
+            "text": packet.get("private_text") or packet.get("thought_text") or "",
+            "addressed_to_nan0": False,
+            "priority": "low",
+            "vision_context": vision_context,
+        })
+        packet["event_context"] = event_context
+        packet["source_family"] = "vision"
+        return packet
+
+    async def _emit_thought(self, thought_packet: Dict[str, Any]):
+        if not (thought_packet and isinstance(thought_packet, dict) and thought_packet.get("thought_id")):
+            return
+
+        nan0_skill = None
+        try:
+            nan0_skill = getattr(self.context.skill_manager, "skills", {}).get("nan0")
+        except Exception:
+            nan0_skill = None
+
+        if nan0_skill and getattr(nan0_skill, "is_active", False) and hasattr(nan0_skill, "handle_external_thought_packet"):
+            await nan0_skill.handle_external_thought_packet(
+                thought_packet,
+                source_event=thought_packet.get("event_context") or {
+                    "source": "vision_stack_v1",
+                    "speaker": "screen",
+                    "source_actor_id": "screen",
+                    "text": thought_packet.get("private_text") or thought_packet.get("thought_text") or "",
+                    "addressed_to_nan0": False,
+                    "priority": "low",
+                    "timestamp": time.time(),
+                },
+            )
+            logger.info(f"Vision thought routed through Nan0Skill: {thought_packet.get('thought_id', 'unknown')}")
+            return
+
+        if self.context and hasattr(self.context, "event_manager"):
+            self.context.event_manager.publish(
+                EventCategory.THOUGHT,
+                "skill:nan0_vision",
+                thought_packet.get("private_text") or thought_packet.get("thought_text") or "",
+                metadata={"thought_id": thought_packet.get("thought_id"), "speech_blocked": "nan0_skill_inactive"},
+            )
+        logger.info(f"Vision thought recorded but not spoken: {thought_packet.get('thought_id', 'unknown')}")
 
     def on_config_reload(self):
         self.initialize()

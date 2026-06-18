@@ -23,3 +23,11 @@ sentence-transformers
 mss
 Pillow
 psutil
+opencv-python
+numpy
+mss
+Pillow
+ultralytics
+pytesseract
+paddleocr
+
