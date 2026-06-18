@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from src.modules.skills.base_skill import BaseSkill
 from src.core.events import EventCategory
 from src.modules.skills.implementations.nan0_thought_engine_v3 import generate_inner_thought_packet
+from src.modules.nan0.session_timeline import record_session_event, record_thought_packet
 from src.utils.logger import get_logger
 
 logger = get_logger("bea.skills.nan0_vision")
@@ -511,60 +512,25 @@ class Nan0VisionSkill(BaseSkill):
             "layer2_semantic": l2,
         }
 
-        packet["objective_observation"] = objective_observation
-        packet["semantic_read"] = l2
-        packet["nan0_interpretation"] = l3.get("perceived_threat")
-        packet["vision_context"] = vision_context
-
-        event_context = dict(packet.get("event_context") or {})
-        event_context.update({
-            "source": "vision_stack_v1",
-            "source_family": "vision",
-            "speaker": "screen",
-            "source_actor_id": "screen",
-            "text": packet.get("private_text") or packet.get("thought_text") or "",
-            "addressed_to_nan0": False,
-            "priority": "low",
-            "vision_context": vision_context,
-        })
-        packet["event_context"] = event_context
-        packet["source_family"] = "vision"
-        return packet
-
-    async def _emit_thought(self, thought_packet: Dict[str, Any]):
-        if not (thought_packet and isinstance(thought_packet, dict) and thought_packet.get("thought_id")):
-            return
-
-        nan0_skill = None
-        try:
-            nan0_skill = getattr(self.context.skill_manager, "skills", {}).get("nan0")
-        except Exception:
-            nan0_skill = None
-
-        if nan0_skill and getattr(nan0_skill, "is_active", False) and hasattr(nan0_skill, "handle_external_thought_packet"):
-            await nan0_skill.handle_external_thought_packet(
-                thought_packet,
-                source_event=thought_packet.get("event_context") or {
-                    "source": "vision_stack_v1",
-                    "speaker": "screen",
-                    "source_actor_id": "screen",
-                    "text": thought_packet.get("private_text") or thought_packet.get("thought_text") or "",
-                    "addressed_to_nan0": False,
-                    "priority": "low",
-                    "timestamp": time.time(),
-                },
-            )
-            logger.info(f"Vision thought routed through Nan0Skill: {thought_packet.get('thought_id', 'unknown')}")
-            return
-
-        if self.context and hasattr(self.context, "event_manager"):
-            self.context.event_manager.publish(
-                EventCategory.THOUGHT,
-                "skill:nan0_vision",
-                thought_packet.get("private_text") or thought_packet.get("thought_text") or "",
-                metadata={"thought_id": thought_packet.get("thought_id"), "speech_blocked": "nan0_skill_inactive"},
-            )
-        logger.info(f"Vision thought recorded but not spoken: {thought_packet.get('thought_id', 'unknown')}")
+    def _emit_thought(self, thought_packet: Dict[str, Any]):
+        record_thought_packet(thought_packet)
+        record_session_event(
+            {
+                "event_id": thought_packet.get("thought_id"),
+                "event_type": "vision_event",
+                "source": "vision_stack_v1",
+                "speaker": "screen",
+                "source_actor_id": "screen",
+                "text": thought_packet.get("private_text") or thought_packet.get("thought_text") or "vision event",
+                "timestamp": thought_packet.get("created_at") or time.time(),
+                "priority": "low",
+                "thought_id": thought_packet.get("thought_id"),
+                "mood": thought_packet.get("mood"),
+            }
+        )
+        if self.context and hasattr(self.context, "emit_event"):
+            self.context.emit_event("nan0_thought_generated", thought_packet)
+            logger.info(f"Vision thought emitted: {thought_packet.get('thought_id', 'unknown')}")
 
     def on_config_reload(self):
         self.initialize()

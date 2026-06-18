@@ -11,10 +11,11 @@ import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from threading import RLock
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 
-MAX_SESSION_EVENTS = 20
+MAX_SESSION_EVENTS = 100
+CONTEXT_EVENT_LIMIT = 20
 
 _LOW_VALUE_SOURCES = {"", "unknown"}
 _LOW_VALUE_TEXT = {"", "none", "null"}
@@ -100,12 +101,39 @@ class SessionTimeline:
                 self._items = self._items[-self.max_events :]
             return item
 
+    def add_speech_packet(self, packet: Dict[str, Any]) -> Optional[TimelineItem]:
+        if not isinstance(packet, dict) or not packet.get("thought_id"):
+            return None
+
+        line = str(packet.get("line_text") or packet.get("text") or "").strip()
+        if not line:
+            return None
+
+        raw_ref = {
+            key: packet.get(key)
+            for key in ("thought_id", "source_thought_id", "mood", "target_actor_id", "voice_enabled", "display_enabled")
+            if packet.get(key) is not None
+        }
+        tags = self._topic_tags("speech", packet.get("target_actor_id"), packet.get("mood"), packet.get("tags") or [])
+        return self.add_item(
+            TimelineItem(
+                timestamp=float(packet.get("created_at") or packet.get("timestamp") or time.time()),
+                event_type="speech",
+                actor=str(packet.get("target_actor_id") or packet.get("actor") or "nan0"),
+                summary=line[:280],
+                raw_ref=raw_ref,
+                significance=self._float_or_none(packet.get("speakability")),
+                tags=tags,
+            )
+        )
+
     def recent_items(self) -> List[Dict[str, Any]]:
         with self._lock:
             return [item.to_dict() for item in self._items]
 
-    def continuity_context(self) -> Dict[str, Any]:
-        items = self.recent_items()
+    def continuity_context(self, event_limit: int = CONTEXT_EVENT_LIMIT) -> Dict[str, Any]:
+        all_items = self.recent_items()
+        items = all_items[-max(1, int(event_limit)):]
         event_types = Counter(item.get("event_type") for item in items if item.get("event_type"))
         actors = Counter(item.get("actor") for item in items if item.get("actor") and item.get("actor") != "unknown")
         tags = Counter(tag for item in items for tag in item.get("tags", []) if tag)
@@ -117,7 +145,9 @@ class SessionTimeline:
 
         return {
             "recent_event_count": len(items),
+            "retained_event_count": len(all_items),
             "max_event_count": self.max_events,
+            "context_event_limit": max(1, int(event_limit)),
             "recent_events": items,
             "repeat_counts": {
                 "event_type": dict(event_types),
@@ -135,7 +165,16 @@ class SessionTimeline:
         source = str(event.get("source") or event.get("event_type") or "unknown").strip()
         text = str(event.get("summary") or event.get("text") or event.get("message") or "").strip()
         actor = str(event.get("source_actor_id") or event.get("actor") or event.get("speaker") or source or "unknown").strip()
-        event_type = str(event.get("event_type") or event.get("thought_seed") or event.get("screen_state") or source or "event").strip()
+        event_type = str(
+            event.get("event_type")
+            or event.get("type")
+            or event.get("kind")
+            or event.get("thought_type")
+            or event.get("thought_seed")
+            or event.get("screen_state")
+            or source
+            or "event"
+        ).strip()
 
         if source.lower() in _LOW_VALUE_SOURCES and text.lower() in _LOW_VALUE_TEXT:
             return None
@@ -152,7 +191,7 @@ class SessionTimeline:
 
         raw_ref = {
             key: event.get(key)
-            for key in ("event_id", "source", "priority", "thought_id", "screen_state", "game_ui_detected")
+            for key in ("event_id", "source", "priority", "thought_id", "screen_state", "game_ui_detected", "mood")
             if event.get(key) is not None
         }
 
@@ -169,7 +208,7 @@ class SessionTimeline:
     def _has_meaningful_signal(self, event: Dict[str, Any], text: str) -> bool:
         if event.get("addressed_to_nan0") or event.get("thought_id"):
             return True
-        if event.get("source") in {"kyo", "discord", "social_pressure", "vision_pressure", "monologue"}:
+        if event.get("source") in {"kyo", "discord", "social_pressure", "vision_pressure", "monologue", "vision_stack_v1", "speech"}:
             return True
         if any(event.get(key) for key in ("combat", "menu_open", "dark_scene", "major_change")):
             return True
@@ -228,6 +267,11 @@ def record_session_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 def record_thought_packet(packet: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     item = _timeline.add_thought_packet(packet)
+    return item.to_dict() if item else None
+
+
+def record_speech_packet(packet: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    item = _timeline.add_speech_packet(packet)
     return item.to_dict() if item else None
 
 

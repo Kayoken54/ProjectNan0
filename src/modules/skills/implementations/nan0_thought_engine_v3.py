@@ -35,6 +35,11 @@ except Exception:
     normalize_actor_id = None
 
 try:
+    from src.modules.nan0.session_timeline import get_continuity_context
+except Exception:
+    get_continuity_context = None
+
+try:
     from src.modules.skills.memory.storage import MemoryStorage
 except Exception:
     MemoryStorage = None
@@ -1349,33 +1354,16 @@ def _ollama_timeout_for_event(event: Dict[str, Any]) -> float:
     return float(cfg.get("live_timeout", 7))
 
 
-def _model_is_dolphin_family(model: str) -> bool:
-    name = str(model or "").lower()
-    return "dolphin" in name or "mistral" in name
-
-
-def _bounded_timeout(timeout: float, family: str = "social") -> float:
-    try:
-        value = float(timeout)
-    except Exception:
-        value = 18.0 if family == "social" else 7.0
-    if family == "social":
-        return max(6.0, min(value, 18.0))
-    if family == "repair":
-        return max(5.0, min(value, 10.0))
-    return max(3.0, min(value, 7.0))
-
-
-def _call_ollama_json(
+def _call_ollama(
     prompt: str,
     model: str,
     timeout: float,
     num_predict: int = 150,
     temperature: float = 0.88,
     system: Optional[str] = None,
-) -> tuple[Dict[str, Any], str, int]:
+) -> tuple[str, int]:
     if requests is None:
-        return {}, "", 0
+        return "", 0
 
     cfg = _router_config()
     skill_cfg = _nan0_skill_config()
@@ -1463,35 +1451,37 @@ def _call_ollama_plain(
             timeout=_bounded_timeout(timeout, "repair"),
         )
         response.raise_for_status()
-        body = response.json()
-        raw = str(body.get("response") or body.get("message") or "").strip()
-        if not raw:
-            raw = _extract_thought_text_value(body).strip()
-        return raw, max(1, int((time.perf_counter() - started) * 1000))
+        raw = (response.json().get("response") or "").strip()
+        latency_ms = max(1, int((time.perf_counter() - started) * 1000))
+        return raw, latency_ms
     except Exception:
-        return "", max(1, int((time.perf_counter() - started) * 1000))
+        latency_ms = max(1, int((time.perf_counter() - started) * 1000))
+        return "", latency_ms
 
-def _call_ollama(
+
+def _call_ollama_json(
     prompt: str,
     model: str,
     timeout: float,
     num_predict: int = 150,
     temperature: float = 0.88,
-) -> tuple[str, int]:
-    thought_json, raw, latency_ms = _call_ollama_json(
-        prompt=prompt,
-        model=model,
-        timeout=timeout,
-        num_predict=num_predict,
-        temperature=temperature,
-        system=_read_persona(),
-    )
-    if raw:
-        return raw, latency_ms
-    if thought_json:
-        return json.dumps(thought_json, ensure_ascii=False), latency_ms
-    return "", latency_ms
-
+    system: Optional[str] = None,
+) -> tuple[Dict[str, Any], str, int]:
+    try:
+        raw, latency_ms = _call_ollama(
+            prompt=prompt,
+            model=model,
+            timeout=timeout,
+            num_predict=num_predict,
+            temperature=temperature,
+            system=system,
+        )
+    except TypeError:
+        raw, latency_ms = _call_ollama(prompt, model, timeout, num_predict=num_predict, temperature=temperature)
+    parsed = _extract_json(raw)
+    if not parsed and raw:
+        parsed = {"thought_text": raw}
+    return parsed, raw, latency_ms
 
 def _extract_json(raw: str) -> Dict[str, Any]:
     if not raw:
@@ -1557,173 +1547,33 @@ def _compact_context(value: Any, limit: int = 1400) -> str:
     return text[:limit]
 
 
-def _inject_8_phase_context(prompt_parts: List[str], enriched_context: Dict[str, Any]) -> List[str]:
-    """Inject optional 8-phase context into the private thought prompt.
+def _read_continuity_context() -> Dict[str, Any]:
+    reader = get_continuity_context
 
-    This function is deliberately compact. It gives Nan0 continuity without
-    flooding the local model or letting Deep Vision become spoken content.
-    """
-    if not isinstance(enriched_context, dict) or not enriched_context:
-        return prompt_parts
+    if reader is None:
+        try:
+            from src.modules.nan0.session_timeline import get_continuity_context as reader
+        except Exception:
+            return {}
 
-    def compact(value: Any, limit: int = 900) -> str:
-        return _compact_context(value, limit)
+    try:
+        context = reader()
+    except Exception:
+        return {}
 
-    # [Nan0 Roadmap Phases 1-7] Current cognition spine.
-    phase_spine = enriched_context.get("phase_spine") or {}
-    if phase_spine:
-        prompt_parts.append(
-            "NAN0 PHASE 1-7 COGNITION SPINE:\n"
-            "Phase 1 Perception: " + compact(phase_spine.get("phase_1_perception", {}), 650) + "\n"
-            "Phase 2 Interpretation: " + compact(phase_spine.get("phase_2_interpretation", {}), 650) + "\n"
-            "Phase 3 Thought Generation: " + compact(phase_spine.get("phase_3_thought_generation", {}), 450) + "\n"
-            "Phase 4 Speech Selection: " + compact(phase_spine.get("phase_4_speech_selection", {}), 450) + "\n"
-            "Phase 5 Context Over Time: " + compact(phase_spine.get("phase_5_context_over_time", {}), 850) + "\n"
-            "Phase 6 Obsession: " + compact(phase_spine.get("phase_6_obsession", {}), 850) + "\n"
-            "Phase 7 Worldview Filter: " + compact(phase_spine.get("phase_7_worldview_filter", {}), 900) + "\n"
-            "Use this spine to continue Nan0's subjectivity. Do not mention phase names in the thought."
-        )
+    return context if isinstance(context, dict) else {}
 
-    # [Legacy context adapters] Existing context sources feeding the same spine.
-    # [Phase 1] Person context.
-    person = enriched_context.get("person") or {}
-    if person:
-        prompt_parts.append(
-            "PERSON CONTEXT:\n"
-            f"name={person.get('display_name', 'Unknown')}; "
-            f"relationship={person.get('relationship', 'stranger')}; "
-            f"tier={person.get('tier', 'unknown')}; "
-            f"valence={person.get('emotional_valence', 0)}; "
-            f"interactions={person.get('interaction_count', 0)}; "
-            f"last_seen_seconds={person.get('seconds_since_last_seen', 'unknown')}; "
-            f"notes={compact(person.get('notes', []), 450)}"
-        )
 
-    # [Phase 2] Conversation continuity.
-    conversation = enriched_context.get("conversation") or {}
-    if conversation:
-        recent_messages = conversation.get("recent_messages") or []
-        prefix = "REACTIVATED CONVERSATION" if conversation.get("is_reactivation") else "CONVERSATION CONTEXT"
-        prompt_parts.append(
-            f"{prefix}:\n"
-            f"thread={str(conversation.get('thread_id', 'unknown'))[:12]}; "
-            f"phase={conversation.get('phase', 'unknown')}; "
-            f"messages={conversation.get('message_count', 0)}; "
-            f"reactivations={conversation.get('reactivation_count', 0)}; "
-            f"topic={conversation.get('topic', 'unknown')};\n"
-            f"recent={compact(recent_messages[-4:], 900)};\n"
-            f"unresolved={compact(conversation.get('unresolved_questions', []), 450)}; "
-            f"promises={compact(conversation.get('promises_made', []), 450)}"
-        )
+def _safe_read_continuity_context() -> Dict[str, Any]:
+    reader = globals().get("_read_continuity_context")
+    if not callable(reader):
+        return {}
+    try:
+        context = reader()
+    except Exception:
+        return {}
+    return context if isinstance(context, dict) else {}
 
-    # [Phase 3] Relationship memory.
-    relationship = enriched_context.get("relationship") or {}
-    if relationship:
-        prompt_parts.append(
-            "RELATIONSHIP MEMORY:\n"
-            f"status={relationship.get('relationship_status', 'unknown')}; "
-            f"balance={relationship.get('emotional_balance', 0)}; "
-            f"positive={relationship.get('total_positive', 0)}; "
-            f"negative={relationship.get('total_negative', 0)};\n"
-            f"active_grudges={compact(relationship.get('active_grudges', [])[:3], 900)};\n"
-            f"recent_moments={compact(relationship.get('recent_moments', [])[-4:], 900)};\n"
-            f"narrative={relationship.get('narrative_summary', 'No summary yet.')}"
-        )
-
-    # [Phase 4] Discord context.
-    discord = enriched_context.get("discord") or {}
-    if discord:
-        prompt_parts.append(
-            "DISCORD ROOM CONTEXT:\n"
-            f"channel={discord.get('channel', 'unknown')}; "
-            f"mood={discord.get('room_mood', 'unknown')}; "
-            f"nan0_role={discord.get('nan0_role', 'unknown')}; "
-            f"temperature={discord.get('social_temperature', 0)}; "
-            f"fomo={discord.get('nan0_fomo_level', 0)}; "
-            f"kyo_present={discord.get('kyo_present', False)}; "
-            f"kyo_targeted={discord.get('kyo_being_targeted', False)};\n"
-            f"active_speakers={compact(discord.get('active_speakers', []), 700)};\n"
-            f"recent={compact(discord.get('recent_events', [])[-4:], 900)}"
-        )
-
-    # [Phase 5] Game state.
-    game_state = enriched_context.get("game_state") or {}
-    if game_state:
-        prompt_parts.append(
-            "GAME STATE:\n"
-            f"game={game_state.get('game_type', 'unknown')}; "
-            f"duration_minutes={game_state.get('session_duration_minutes', 0)}; "
-            f"high_intensity={game_state.get('is_high_intensity', False)};\n"
-            f"player={compact(game_state.get('player', {}), 700)};\n"
-            f"tf2={compact(game_state.get('tf2', {}), 450)}; "
-            f"minecraft={compact(game_state.get('minecraft', {}), 450)};\n"
-            f"recent_events={compact(game_state.get('recent_events', [])[-4:], 900)}"
-        )
-
-    # [Phase 6] Game understanding.
-    game_understanding = enriched_context.get("game_understanding") or {}
-    if game_understanding:
-        prompt_parts.append(
-            "GAME UNDERSTANDING:\n"
-            f"session={compact(game_understanding.get('current_session', {}), 900)};\n"
-            f"kyo_profile={compact(game_understanding.get('kyo_profile', {}), 900)}"
-        )
-
-    # [Phase 7] Vision expansion.
-    vision_expansion = enriched_context.get("vision_expansion") or {}
-    if vision_expansion:
-        prompt_parts.append(
-            "VISION EXPANSION:\n"
-            f"environment={compact(vision_expansion.get('environment', {}), 600)};\n"
-            f"activity={compact(vision_expansion.get('activity', {}), 600)};\n"
-            f"patterns={compact(vision_expansion.get('patterns', {}), 600)};\n"
-            f"anomalies={compact(vision_expansion.get('anomalies', {}), 600)};\n"
-            f"inferred={compact(vision_expansion.get('inferred', {}), 600)}\n"
-            "Treat inferred Kyo state as uncertain, not fact."
-        )
-
-    # [Phase 9] Obsession Engine. Temporary topic gravity, not permanent memory.
-    obsession = enriched_context.get("obsession_engine") or {}
-    if obsession:
-        prompt_parts.append(
-            "OBSESSION ENGINE - TEMPORARY TOPIC GRAVITY:\n"
-            f"active_topics={compact(obsession.get('active_topics', []), 1000)};\n"
-            f"event_candidates={compact(obsession.get('event_candidates', []), 500)};\n"
-            "Use this to keep Nan0 caring about a topic across multiple thoughts. "
-            "Connect to an active obsession only when it feels natural. Do not force callbacks."
-        )
-
-    # [Phase 10] Personal Canon. Temporary stream truths and running bits.
-    personal_canon = enriched_context.get("personal_canon") or {}
-    if personal_canon:
-        prompt_parts.append(
-            "PERSONAL CANON - TEMPORARY STREAM TRUTHS:\n"
-            f"active_items={compact(personal_canon.get('active_items', []), 1200)};\n"
-            "These are emotionally real to Nan0 inside the session. They may be jokes, grudges, "
-            "bits, or subjective beliefs. Let them create callbacks and continuity without turning them into factual claims."
-        )
-
-    # [Phase 8] Deep Vision. Private influence only, never direct speech.
-    deep_vision_prompt = enriched_context.get("deep_vision_prompt")
-    if deep_vision_prompt:
-        prompt_parts.append(
-            "DEEP VISION - EPHEMERAL PRIVATE INFLUENCE:\n"
-            f"{str(deep_vision_prompt)[:900]}\n"
-            "This is Nan0's private imagination. Do not quote it. Do not speak it verbatim. "
-            "Let it affect mood, hesitation, silence, sarcasm, or indirect tenderness only."
-        )
-
-    emotional = enriched_context.get("deep_vision_emotional_influence") or {}
-    if emotional:
-        prompt_parts.append(
-            "DEEP VISION EMOTIONAL BIAS:\n"
-            f"tone={emotional.get('emotional_tone', 'neutral')}; "
-            f"empathy_boost={emotional.get('empathy_boost', 0)}; "
-            f"weight={emotional.get('weight', 0)}; "
-            f"private={emotional.get('private', True)}"
-        )
-
-    return prompt_parts
 
 def _build_json_thought_prompt(
     event: Dict[str, Any],
@@ -1732,6 +1582,7 @@ def _build_json_thought_prompt(
     relationship_context: Dict[str, Any],
     memory_context: List[str],
     vision_context: Dict[str, Any],
+    continuity_context: Dict[str, Any],
 ) -> str:
     source = str(event.get("source") or "unknown")
     family = _source_family_for_event(event)
@@ -1767,47 +1618,65 @@ def _build_json_thought_prompt(
         "semantic": (vision_context.get("layer2_semantic") or {}),
     }
 
-    if family == "kyo":
-        task = "Kyo is poking Nan0 directly. React to Kyo, not to a generic person."
-    elif family == "discord":
-        task = "A Discord voice entered the room. Treat them as witness, menace, audience, or suspicious furniture."
-    elif family == "vision":
-        task = "The screen changed. Use uncertainty when facts are weak. Do not invent details."
-    elif family == "system":
-        task = "Nan0 is arriving in her wires. No boot report."
-    elif family == "proactive":
-        task = "Nobody handed Nan0 a line. Continue the room only if the mutter has teeth."
-    else:
-        task = "Something touched the room. React from Nan0's side of the glass."
+    return f"""
+Generate Nan0's PRIVATE INNER THOUGHT as JSON.
 
-    event_text = "" if source in {"monologue", "boot"} else text
-    if family == "kyo" and ("?" in text or any(m in text.lower() for m in ("do you", "what", "why", "how", "are you", "can you", "would you", "tell me"))):
-        direct_question_rule = "Kyo asked directly. Answer the subject or dodge with a Nan0 stance. Do not ask the same question back."
-    elif family == "kyo":
-        direct_question_rule = "Kyo touched the room. React to Kyo, not to a generic person."
-    else:
-        direct_question_rule = "React from Nan0's side of the glass."
+This is NOT spoken aloud.
+This is NOT a response.
+This is the thought before speech exists.
 
-    # Do not let visual state hijack a Kyo social question. Vision only enters
-    # Kyo replies when Kyo explicitly asks what Nan0 sees.
-    if not (family == "vision" or event.get("question_type") == "vision_status"):
-        compact_vision = {}
+Return ONLY valid JSON with this exact shape:
+{{
+  "thought_text": "fragmented emotional Nan0 private thought",
+  "mood": "normal|suspicion|boredom|gremlin_rage|smug|possessive|offended|muttering",
+  "pressure": 0.0,
+  "novelty": 0.0,
+  "speakability": 0.0,
+  "relationship_charge": 0.0,
+  "ego_charge": 0.0,
+  "vision_charge": 0.0,
+  "memory_write_candidate": false,
+  "suppression_reason": null
+}}
 
-    runtime_context = {
-        "source_family": family,
-        "source": source,
-        "speaker": speaker,
-        "actor_contract": actor_contract,
-        "addressed_to_nan0": addressed,
-        "incoming_words": event_text[:420],
-        "current_job": direct_question_rule,
-        "continuity": (enriched.get("continuity_context") or {}),
-        "thread": thread,
-        "room": compact_emotion,
-        "kyo_link": relationship_context,
-        "memory": memory_context,
-        "vision": compact_vision,
-    }
+Thought texture:
+fragmented,
+emotionally leaking,
+sarcastic,
+personal,
+machine-gremlin ego,
+attached to Kyo when Kyo is involved,
+specific to the event.
+
+Banned thought_text:
+"Kyo said something directly"
+"medium brain should answer"
+"respond to the user"
+"continue with your thoughts"
+"pixels are moving"
+
+EMOTIONAL STATE:
+{_compact_context(compact_emotion, 1200)}
+
+RELATIONSHIP CONTEXT:
+{_compact_context(relationship_context, 1200)}
+
+RECENT MEMORY:
+{_compact_context(memory_context, 1400)}
+
+SESSION CONTINUITY:
+{_compact_context(continuity_context, 1600)}
+
+VISION CONTEXT:
+{_compact_context(compact_vision, 1400)}
+
+EVENT:
+source={source}
+speaker={speaker}
+addressed_to_nan0={addressed}
+thought_seed={seed}
+event_text={text}
+""".strip()
 
     prompt = f"""
 Return exactly one JSON object. No markdown. No transcript. No bullets.
@@ -1881,6 +1750,7 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
         if x
     )
     memory_context = _query_recent_memory(memory_query, limit=4)
+    continuity_context = _safe_read_continuity_context()
 
     model = _ollama_model_for_event(event)
     timeout = _ollama_timeout_for_event(event)
@@ -1891,6 +1761,7 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
         relationship_context=relationship_context,
         memory_context=memory_context,
         vision_context=vision,
+        continuity_context=continuity_context,
     )
 
     # Qwen-style models can follow the JSON contract. Dolphin/Mistral-family
@@ -2073,27 +1944,9 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
         vision_context=vision,
     )
 
-    packet_dict = packet.to_dict()
-    packet_dict["source_family"] = family
-    _append_speech_debug({
-        "debug_stage": "thought_created",
-        "event_id": packet_dict.get("event_id"),
-        "thought_id": packet_dict.get("thought_id"),
-        "source": packet_dict.get("source"),
-        "seed_text": packet_dict.get("seed_text"),
-        "private_text": packet_dict.get("private_text"),
-        "mood": packet_dict.get("mood"),
-        "pressure": packet_dict.get("pressure"),
-        "novelty": packet_dict.get("novelty"),
-        "speakability": packet_dict.get("speakability"),
-        "relationship_charge": packet_dict.get("relationship_charge"),
-        "ego_charge": packet_dict.get("ego_charge"),
-        "vision_charge": packet_dict.get("vision_charge"),
-        "suppression_reason": packet_dict.get("suppression_reason"),
-        "decision": "thought_only",
-        "decision_reason": "created_before_router",
-    })
-    return packet_dict
+    data = packet.to_dict()
+    data["continuity_context"] = continuity_context
+    return data
 
 
 def apply_thought_gate(raw_state: Dict[str, Any]) -> Dict[str, Any]:

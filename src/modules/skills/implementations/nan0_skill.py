@@ -22,6 +22,7 @@ from src.modules.skills.implementations.nan0_thought_engine_v3 import (
     generate_inner_thought_packet,
 )
 from src.utils.logger import get_logger
+from src.modules.nan0.session_timeline import record_session_event, record_speech_packet, record_thought_packet
 
 logger = get_logger("bea.skills.nan0")
 
@@ -847,8 +848,7 @@ class Nan0Skill(BaseSkill):
         if not packet.get("thought_id"):
             raise RuntimeError("Thought engine returned packet without thought_id")
 
-        self._apply_continuity_from_thought(event, packet)
-        self._remember_debug_thought(packet, event)
+        record_thought_packet(packet)
         return packet
 
     def _looks_like_question(self, text: str, addressed: bool = False) -> bool:
@@ -1779,12 +1779,12 @@ class Nan0Skill(BaseSkill):
                     "voice_enabled": True,
                     "display_enabled": True,
                     "avatar_state": mood,
-                    "source": reason,
                     "created_at": time.time(),
                 }
+                record_speech_packet(speech_packet)
                 if hasattr(self.brain, "last_nan0_speech_packet"):
-                    self.brain.last_nan0_speech_packet = dict(speech_packet)
-                await self.brain.perform_output_task(mood, line, speech_packet=speech_packet)
+                    self.brain.last_nan0_speech_packet = speech_packet
+                await self.brain.perform_output_task(mood, line)
             except Exception as exc:
                 logger.error(f"Nan0 output failed: {exc}")
 
@@ -2485,6 +2485,7 @@ class Nan0Skill(BaseSkill):
         self._recent_line_times[clean] = time.time()
 
     def _remember_event(self, event: Dict[str, Any]):
+        record_session_event(event)
         self.recent_events.append(
             {
                 "time": round(time.time(), 2),
