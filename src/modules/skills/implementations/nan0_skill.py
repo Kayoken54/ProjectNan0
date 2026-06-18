@@ -22,6 +22,7 @@ from src.modules.skills.implementations.nan0_thought_engine_v3 import (
     generate_inner_thought_packet,
 )
 from src.utils.logger import get_logger
+from src.modules.nan0.session_timeline import record_session_event, record_thought_packet
 
 logger = get_logger("bea.skills.nan0")
 
@@ -363,6 +364,7 @@ class Nan0Skill(BaseSkill):
         if not packet.get("thought_id"):
             raise RuntimeError("Thought engine returned packet without thought_id")
 
+        record_thought_packet(packet)
         return packet
 
     def _conversation_mode_active(self, now: Optional[float] = None) -> bool:
@@ -1050,6 +1052,7 @@ class Nan0Skill(BaseSkill):
         self._recent_line_times[clean] = time.time()
 
     def _remember_event(self, event: Dict[str, Any]):
+        record_session_event(event)
         self.recent_events.append(
             {
                 "time": round(time.time(), 2),
