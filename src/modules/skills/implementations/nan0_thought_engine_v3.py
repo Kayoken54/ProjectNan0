@@ -1213,6 +1213,30 @@ def _call_ollama_json(
         parsed = {"thought_text": raw}
     return parsed, raw, latency_ms
 
+def _call_ollama_json(
+    prompt: str,
+    model: str,
+    timeout: float,
+    num_predict: int = 150,
+    temperature: float = 0.88,
+    system: Optional[str] = None,
+) -> tuple[Dict[str, Any], str, int]:
+    try:
+        raw, latency_ms = _call_ollama(
+            prompt=prompt,
+            model=model,
+            timeout=timeout,
+            num_predict=num_predict,
+            temperature=temperature,
+            system=system,
+        )
+    except TypeError:
+        raw, latency_ms = _call_ollama(prompt, model, timeout, num_predict=num_predict, temperature=temperature)
+    parsed = _extract_json(raw)
+    if not parsed and raw:
+        parsed = {"thought_text": raw}
+    return parsed, raw, latency_ms
+
 def _extract_json(raw: str) -> Dict[str, Any]:
     if not raw:
         return {}
