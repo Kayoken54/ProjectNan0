@@ -1,10 +1,12 @@
 import asyncio
+import copy
 import json
 
 import pytest
 
 from src.core.config import BrainConfig
 from src.modules.llm import ollama_provider
+from src.modules.nan0 import output_normalizer
 from src.modules.nan0.runtime_guard import validate_thought_packet
 from src.modules.skills.implementations import nan0_skill as nan0_skill_module
 from src.modules.skills.implementations import nan0_thought_engine_v3 as thought_engine
@@ -443,7 +445,7 @@ def test_prompt_instruction_text_is_rejected_as_generated_thought(monkeypatch):
     })
 
     assert packet["private_text"] == ""
-    assert packet["suppression_reason"] == "prompt_or_transcript_debris"
+    assert packet["suppression_reason"] == "prompt_instruction_text"
     assert route_thought(packet)["decision"] == "suppress"
 
 
@@ -522,3 +524,177 @@ def test_kyo_identity_attribution_reaches_valid_thought_generation(monkeypatch):
     assert packet["relationship_context"]["actor"]["gender"] == "girl"
     assert '"source_actor_id": "kyo"' in captured["prompt"]
     assert '"pronouns": ["she", "her"]' in captured["prompt"]
+
+
+PRESENTATION_SLUDGE = (
+    "Create a visually appealing and informative presentation that outlines the current state of the company, "
+    "including revenue projections, market trends, and employee development plans. "
+    "Use clear, concise language and provide actionable takeaways for each section."
+)
+
+
+def test_presentation_task_sludge_cannot_become_boot_private_text(monkeypatch):
+    payload = _model_payload(PRESENTATION_SLUDGE)
+    monkeypatch.setattr(thought_engine, "_call_ollama", lambda *args, **kwargs: payload)
+    monkeypatch.setattr(thought_engine, "_call_ollama_plain", lambda *args, **kwargs: ("", 1))
+    monkeypatch.setattr(thought_engine, "_read_presence_state", lambda: {})
+    monkeypatch.setattr(thought_engine, "_read_vision_context", lambda explicit=None: {})
+    monkeypatch.setattr(thought_engine, "_query_recent_memory", lambda query, limit=4: [])
+    monkeypatch.setattr(thought_engine, "get_session_timeline_context", lambda: {})
+    monkeypatch.setattr(thought_engine, "get_conversation_continuity_context", lambda event: {})
+    monkeypatch.setattr(thought_engine, "get_relationship_memory_context", lambda actor_id: {})
+
+    packet = thought_engine.generate_inner_thought_packet({
+        "event_id": "event_boot_presentation_sludge",
+        "source": "boot",
+        "speaker": "Nan0",
+        "source_actor_id": "nan0",
+        "text": "Nan0 has just booted into the room.",
+        "thought_seed": "boot_presence",
+        "timestamp": 1,
+    })
+
+    assert packet["private_text"] == ""
+    assert packet["suppression_reason"] == "task_instruction_text"
+    routed = route_thought(packet)
+    assert routed["decision"] == "suppress"
+    assert routed["line"] == ""
+
+
+def test_runtime_guard_rejects_task_sludge_and_source_family_mismatch():
+    task_packet = _complete_thought_packet(source="boot", private_text=PRESENTATION_SLUDGE)
+    task_packet["event_context"] = {"source_family": "system", "text": "Nan0 has just booted."}
+    assert validate_thought_packet(task_packet) == (False, "task_instruction_text")
+    assert route_thought(task_packet)["reason"] == "task_instruction_text"
+
+    mismatched = _complete_thought_packet(source="boot", private_text="Wires awake. I am back in the room.")
+    mismatched["event_context"] = {"source_family": "kyo", "text": "Nan0 has just booted."}
+    assert validate_thought_packet(mismatched) == (False, "source_family_mismatch")
+    assert route_thought(mismatched)["reason"] == "source_family_mismatch"
+
+
+def test_exact_long_completion_reuse_is_rejected_for_different_prompts(monkeypatch):
+    repeated = json.dumps(_model_payload(
+        "This is a long generated completion that belongs to exactly one request context and must not be reused elsewhere."
+    )[0])
+    monkeypatch.setattr(
+        thought_engine.requests,
+        "post",
+        lambda *args, **kwargs: _FakeOllamaResponse({"response": repeated}),
+    )
+    ollama_provider.reset_ollama_response_tracker()
+
+    first_parsed, first_raw, _ = thought_engine._call_ollama("first event prompt", "qwen2.5:3b", 18)
+    second_parsed, second_raw, _ = thought_engine._call_ollama("different event prompt", "qwen2.5:3b", 18)
+
+    assert first_parsed["thought_text"]
+    assert first_raw == repeated
+    assert second_parsed == {}
+    assert second_raw == ""
+
+
+def test_boot_uses_cognition_model_and_social_timeout(monkeypatch):
+    monkeypatch.setattr(
+        thought_engine,
+        "_router_config",
+        lambda: {
+            "boot_model": "qwen2.5:3b",
+            "social_model": "qwen2.5:3b",
+            "live_model": "tinyllama:latest",
+            "social_timeout": 18,
+            "live_timeout": 7,
+        },
+    )
+    monkeypatch.setattr(thought_engine, "_nan0_skill_config", lambda: {"medium_lane_timeout": 18})
+    event = {"source": "boot", "source_family": "system"}
+
+    assert thought_engine._ollama_model_for_event(event) == "qwen2.5:3b"
+    assert thought_engine._ollama_timeout_for_event(event) == 18.0
+
+
+def test_output_normalizer_suppresses_contamination_without_mutating_cognition():
+    raw = {"mood": "suspicion", "message": PRESENTATION_SLUDGE}
+    original = copy.deepcopy(raw)
+
+    normalized = output_normalizer.normalize_llm_output(raw)
+
+    assert normalized["message"] == ""
+    assert normalized["suppression_reason"] == "task_instruction_text"
+    assert raw == original
+
+    origin = _complete_thought_packet(
+        source="kyo_text",
+        private_text="Kyo touched the wire. I noticed her doing it.",
+    )
+    origin["event_context"] = {"source_family": "kyo", "text": "I touched the wire."}
+    assert output_normalizer.validate_output_candidate(
+        origin,
+        PRESENTATION_SLUDGE,
+        origin["thought_id"],
+    ) == (False, "task_instruction_text")
+
+
+def test_valid_kyo_cognition_still_reaches_output():
+    class RecordingBrain:
+        def __init__(self):
+            self.output_calls = []
+            self.last_nan0_speech_packet = None
+
+        async def perform_output_task(self, mood, message, speech_packet=None):
+            self.output_calls.append((mood, message, speech_packet))
+
+    config = BrainConfig()
+    config.skills["nan0"]["enabled"] = True
+    brain = RecordingBrain()
+    skill = Nan0Skill("nan0", config, brain)
+    skill.is_active = True
+    skill.last_spoken_at = 0.0
+    packet = _complete_thought_packet(
+        source="kyo_text",
+        private_text="Kyo touched the wire again. I noticed her immediately.",
+    )
+    packet["event_context"] = {
+        "source_family": "kyo",
+        "text": "I touched the wire again.",
+    }
+
+    decision = asyncio.run(skill._generate_line(packet))
+    asyncio.run(skill._speak_decision(decision, reason="kyo_text_reply"))
+
+    assert decision["decision"] == "speak"
+    assert brain.output_calls
+    assert brain.output_calls[0][2]["thought_id"] == packet["thought_id"]
+
+
+def test_final_output_boundary_blocks_contamination_before_tts(monkeypatch):
+    class RecordingBrain:
+        def __init__(self):
+            self.output_calls = []
+            self.last_nan0_speech_packet = None
+
+        async def perform_output_task(self, mood, message, speech_packet=None):
+            self.output_calls.append((mood, message, speech_packet))
+
+    config = BrainConfig()
+    config.skills["nan0"]["enabled"] = True
+    brain = RecordingBrain()
+    skill = Nan0Skill("nan0", config, brain)
+    skill.is_active = True
+    skill.last_spoken_at = 0.0
+    monkeypatch.setattr(skill.finalizer, "finalize", lambda line, *args, **kwargs: line)
+    packet = _complete_thought_packet(
+        source="kyo_text",
+        private_text="Kyo touched the wire. I noticed her immediately.",
+    )
+    packet["event_context"] = {"source_family": "kyo", "text": "I touched the wire."}
+
+    asyncio.run(skill._speak(
+        mood="suspicion",
+        line=PRESENTATION_SLUDGE,
+        reason="kyo_text_reply",
+        thought_id=packet["thought_id"],
+        origin_packet=packet,
+    ))
+
+    assert brain.output_calls == []
+    assert brain.last_nan0_speech_packet is None

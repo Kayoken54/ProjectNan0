@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -41,6 +42,99 @@ INSTRUCTION_TEXT_MARKERS = (
     "no json. no labels",
 )
 
+VALID_SOURCE_FAMILIES = {"kyo", "discord", "vision", "proactive", "system", "external"}
+
+TASK_ARTIFACT_MARKERS = (
+    "presentation",
+    "slide deck",
+    "business document",
+    "business plan",
+    "company's successes",
+    "company's challenges",
+    "revenue projection",
+    "market trend",
+    "employee development",
+    "actionable takeaway",
+    "executive summary",
+    "stakeholder",
+)
+
+BOOT_COGNITION_MARKERS = (
+    "awake",
+    "boot",
+    "back",
+    "here",
+    "online",
+    "room",
+    "wire",
+    "machine",
+    "system",
+    "kyo",
+    "again",
+    "return",
+    "exist",
+)
+
+
+def source_family_for_source(source: Any) -> str:
+    raw = str(source or "").strip().lower()
+    if not raw:
+        return ""
+    if raw in {"kyo", "kyo_text", "kyo_voice", "kyo_mic", "manual", "manual_command", "typed", "text", "console", "mic", "voice"} or raw.startswith("kyo_"):
+        return "kyo"
+    if "discord" in raw:
+        return "discord"
+    if raw in {"vision", "vision_stack_v1", "screen", "fast_eyes", "vision_pressure"} or "vision" in raw:
+        return "vision"
+    if raw in {"monologue", "proactive", "social_pressure", "idle_presence", "pressure_idle"}:
+        return "proactive"
+    if raw in {"boot", "system", "shutdown"}:
+        return "system"
+    return "external"
+
+
+def validate_cognition_text(
+    text: Any,
+    *,
+    source: Any = "",
+    source_family: Any = "",
+    event_text: Any = "",
+) -> Tuple[bool, str]:
+    """Reject provenance failures without judging Nan0's attitude or quality."""
+    raw = str(text or "").strip()
+    if not raw:
+        return False, "missing_private_text"
+    low = raw.lower()
+
+    if any(marker in low for marker in INSTRUCTION_TEXT_MARKERS):
+        return False, "prompt_instruction_text"
+
+    artifact_hits = sum(1 for marker in TASK_ARTIFACT_MARKERS if marker in low)
+    task_directive = re.match(
+        r"^\s*(?:create|write|draft|prepare|develop|design|generate|produce|compose|outline|make)\b",
+        low,
+    )
+    if (
+        (task_directive and artifact_hits)
+        or artifact_hits >= 2
+        or "use clear, concise language" in low
+        or "provide actionable takeaways" in low
+    ):
+        return False, "task_instruction_text"
+
+    normalized_event = re.sub(r"\W+", " ", str(event_text or "").lower()).strip()
+    normalized_text = re.sub(r"\W+", " ", low).strip()
+    if normalized_event and normalized_text == normalized_event:
+        return False, "event_text_echo"
+
+    family = str(source_family or source_family_for_source(source)).strip().lower()
+    if family and family not in VALID_SOURCE_FAMILIES:
+        return False, "invalid_source_family"
+    if str(source or "").strip().lower() == "boot" and not any(marker in low for marker in BOOT_COGNITION_MARKERS):
+        return False, "unrelated_boot_content"
+
+    return True, "valid"
+
 
 def validate_thought_packet(
     packet: Any,
@@ -62,12 +156,28 @@ def validate_thought_packet(
     if expected_source is not None and source.lower() != str(expected_source).strip().lower():
         return False, "unexpected_thought_source"
 
+    derived_family = source_family_for_source(source)
+    declared_family = str(
+        packet.get("source_family")
+        or (packet.get("event_context") or {}).get("source_family")
+        or derived_family
+    ).strip().lower()
+    if declared_family not in VALID_SOURCE_FAMILIES:
+        return False, "invalid_source_family"
+    if declared_family != derived_family:
+        return False, "source_family_mismatch"
+
     private_text = str(packet.get("private_text") or "").strip()
     if not private_text:
         return False, "missing_private_text"
-    private_low = private_text.lower()
-    if any(marker in private_low for marker in INSTRUCTION_TEXT_MARKERS):
-        return False, "prompt_instruction_text"
+    content_valid, content_reason = validate_cognition_text(
+        private_text,
+        source=source,
+        source_family=declared_family,
+        event_text=(packet.get("event_context") or {}).get("text"),
+    )
+    if not content_valid:
+        return False, content_reason
 
     if not str(packet.get("thought_type") or "").strip() or not str(packet.get("mood") or "").strip():
         return False, "missing_thought_metadata"

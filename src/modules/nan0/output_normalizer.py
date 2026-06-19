@@ -14,6 +14,8 @@ import json
 import re
 from typing import Any, Dict, Optional, Tuple
 
+from src.modules.nan0.runtime_guard import validate_cognition_text, validate_thought_packet
+
 ALLOWED_MOODS = {
     "normal",
     "suspicion",
@@ -129,13 +131,36 @@ def normalize_llm_output(
     line = _compress_to_nan0_line(str(candidate), mood=mood, target=str(target), thought=thought)
     line = _sanitize_line(line)
     line = _trim_line(line, max_chars=max_chars)
+    content_valid, suppression_reason = validate_cognition_text(line)
+    if not content_valid:
+        line = ""
 
     return {
         "mood": mood,
         "message": line,
         "internal_thought": thought,
         "normalized_by": "nan0_output_normalizer_v7_prime_directive",
+        "suppression_reason": None if content_valid else suppression_reason,
     }
+
+
+def validate_output_candidate(
+    origin_packet: Any,
+    line: Any,
+    thought_id: Any,
+) -> Tuple[bool, str]:
+    """Final read-only guard before a line can be handed to output/TTS."""
+    valid, reason = validate_thought_packet(origin_packet)
+    if not valid:
+        return False, reason
+    if str(origin_packet.get("thought_id") or "") != str(thought_id or ""):
+        return False, "thought_origin_mismatch"
+    return validate_cognition_text(
+        line,
+        source=origin_packet.get("source"),
+        source_family=(origin_packet.get("event_context") or {}).get("source_family"),
+        event_text=(origin_packet.get("event_context") or {}).get("text"),
+    )
 
 def normalize_mood_message(mood: str, message: Any, target_actor: str = "kyo") -> Tuple[str, str]:
     packet = normalize_llm_output(

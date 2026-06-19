@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
@@ -12,6 +15,10 @@ from src.utils.logger import get_logger
 
 logger = get_logger("bea.llm.ollama")
 
+_RESPONSE_CONTEXT_LOCK = threading.Lock()
+_RESPONSE_CONTEXTS = OrderedDict()
+_MAX_RESPONSE_CONTEXTS = 256
+
 
 def extract_ollama_response_text(payload: Any) -> str:
     """Return model text only from a valid Ollama generate response."""
@@ -19,6 +26,32 @@ def extract_ollama_response_text(payload: Any) -> str:
         return ""
     response = payload.get("response")
     return response.strip() if isinstance(response, str) else ""
+
+
+def is_stale_ollama_response(prompt: Any, response: Any, scope: str = "default") -> bool:
+    """Detect an exact long completion reused for a different request context."""
+    prompt_text = re.sub(r"\s+", " ", str(prompt or "")).strip()
+    response_text = re.sub(r"\s+", " ", str(response or "")).strip()
+    if len(response_text) < 48:
+        return False
+
+    prompt_hash = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
+    response_hash = hashlib.sha256(response_text.encode("utf-8")).hexdigest()
+    key = (str(scope), response_hash)
+    with _RESPONSE_CONTEXT_LOCK:
+        previous_prompt_hash = _RESPONSE_CONTEXTS.get(key)
+        if previous_prompt_hash is not None and previous_prompt_hash != prompt_hash:
+            return True
+        _RESPONSE_CONTEXTS[key] = prompt_hash
+        _RESPONSE_CONTEXTS.move_to_end(key)
+        while len(_RESPONSE_CONTEXTS) > _MAX_RESPONSE_CONTEXTS:
+            _RESPONSE_CONTEXTS.popitem(last=False)
+    return False
+
+
+def reset_ollama_response_tracker() -> None:
+    with _RESPONSE_CONTEXT_LOCK:
+        _RESPONSE_CONTEXTS.clear()
 
 
 DEFAULT_THOUGHT_PERSONA_PATH = Path("data/prompts/nan0_persona.txt")
@@ -202,7 +235,14 @@ class OllamaLLM(LLMInterface):
             call_timeout = 18.0
         response = requests.post(self.generate_url, json=payload, timeout=call_timeout)
         response.raise_for_status()
-        return extract_ollama_response_text(response.json())
+        generated = extract_ollama_response_text(response.json())
+        if is_stale_ollama_response(
+            prompt,
+            generated,
+            scope=f"provider:{self.model_name}:{'json' if json_hint else 'text'}",
+        ):
+            return ""
+        return generated
 
     def chat(
         self,

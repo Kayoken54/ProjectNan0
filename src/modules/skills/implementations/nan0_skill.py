@@ -23,6 +23,7 @@ from src.modules.skills.implementations.nan0_thought_engine_v3 import (
     validate_inner_thought_packet,
 )
 from src.modules.nan0.runtime_guard import validate_thought_packet
+from src.modules.nan0.output_normalizer import validate_output_candidate
 from src.utils.logger import get_logger
 from src.modules.nan0.session_timeline import record_session_event, record_speech_packet, record_thought_packet
 
@@ -1823,6 +1824,23 @@ class Nan0Skill(BaseSkill):
             }
             line = self.finalizer.finalize(line, event, self.last_seen_summary, self._recent_lines)
             if not isinstance(line, str) or not line.strip():
+                return
+            output_valid, output_reason = validate_output_candidate(origin_packet, line, thought_id)
+            if not output_valid:
+                logger.warning(f"Nan0 output blocked before TTS: {output_reason}")
+                self._record_speech_debug(
+                    origin_packet,
+                    {
+                        "decision": "suppress",
+                        "thought_id": thought_id,
+                        "reason": output_reason,
+                        "raw_line": line,
+                        "line_text": None,
+                        "voice_enabled": False,
+                        "display_enabled": False,
+                    },
+                    debug_stage="output_guard_suppressed",
+                )
                 return
 
             mood = self._normalize_mood(mood)

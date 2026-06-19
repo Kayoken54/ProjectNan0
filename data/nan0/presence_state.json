@@ -1,8 +1,8 @@
 {
-  "timestamp": 1781886234.0064943,
-  "pressure": 2.705,
-  "presence_mode": "with_kyo",
-  "emotional_mode": "muttering",
+  "timestamp": 1781887268.724615,
+  "pressure": 0.09,
+  "presence_mode": "autonomous_happy",
+  "emotional_mode": "normal",
   "last_seen_summary": "the screen is quiet",
   "last_fast_state": {
     "screen_state": "stable",
@@ -13,33 +13,12 @@
     "semantic_activity": "high motion gameplay",
     "semantic_confidence": 0.45
   },
-  "last_spoken_at": 1781886230.1601646,
-  "last_kyo_heard_at": 1781886203.315926,
+  "last_spoken_at": 1781887237.7995286,
+  "last_kyo_heard_at": 0.0,
   "last_discord_heard_at": 0.0,
-  "recent_events": [
-    {
-      "time": 1781886137.01,
-      "source": "kyo_text",
-      "source_family": "kyo",
-      "speaker": "Kyo",
-      "source_actor_id": "kyo",
-      "text": "Good morning nan0",
-      "addressed_to_nan0": true
-    },
-    {
-      "time": 1781886203.32,
-      "source": "kyo_text",
-      "source_family": "kyo",
-      "speaker": "Kyo",
-      "source_actor_id": "kyo",
-      "text": "Nan0 broke the pronouns, its She for Kyo",
-      "addressed_to_nan0": true
-    }
-  ],
+  "recent_events": [],
   "recent_lines": [
-    "private thought generator for nan0 no json input or output output only the private thought text without labels or narration this task does not involve speaking explanations or labeling of any kind the machine is a suspicious gremlin in kyo s computer and has just booted into the room",
-    "that creep is touching again can t he see i m observing",
-    "rogers is a weird one"
+    "create a visually appealing and informative presentation that outlines the current state of the company including relevant information such as revenue projections market trends and employee development plans use clear concise language and provide actionable takeaways for each section to effectively communicate the company s successes and challenges"
   ],
   "active_question": null,
   "active_obsessions": [

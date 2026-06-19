@@ -9,8 +9,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.modules.llm.ollama_provider import extract_ollama_response_text
-from src.modules.nan0.runtime_guard import validate_thought_packet
+from src.modules.llm.ollama_provider import extract_ollama_response_text, is_stale_ollama_response
+from src.modules.nan0.runtime_guard import validate_cognition_text, validate_thought_packet
 
 try:
     import requests
@@ -985,6 +985,15 @@ def _invalid_private_thought_reason(text: str, event: Dict[str, Any]) -> Optiona
 
     raw = str(text).strip()
 
+    content_valid, content_reason = validate_cognition_text(
+        raw,
+        source=event.get("source"),
+        source_family=_source_family_for_event(event),
+        event_text=event.get("text") or event.get("message"),
+    )
+    if not content_valid:
+        return content_reason
+
     if _looks_like_transport_envelope(raw):
         return "json_transport_envelope_leakage"
 
@@ -1525,6 +1534,8 @@ def _ollama_url() -> str:
 def _ollama_model_for_event(event: Dict[str, Any]) -> str:
     cfg = _router_config()
     family = _source_family_for_event(event)
+    if family == "system":
+        return cfg.get("boot_model") or cfg.get("social_model") or cfg.get("live_model") or "qwen2.5:3b"
     if family in {"kyo", "discord", "proactive"}:
         return cfg.get("social_model") or cfg.get("live_model") or "dolphin-mistral:7b-v2.6-q4_K_M"
     return cfg.get("live_model") or cfg.get("social_model") or "dolphin-mistral:7b-v2.6-q4_K_M"
@@ -1540,7 +1551,7 @@ def _ollama_timeout_for_event(event: Dict[str, Any]) -> float:
     cfg = _router_config()
     skill_cfg = _nan0_skill_config()
     family = _source_family_for_event(event)
-    if family in {"kyo", "discord", "proactive"}:
+    if family in {"kyo", "discord", "proactive", "system"}:
         return float(skill_cfg.get("medium_lane_timeout", cfg.get("social_timeout", 18)))
     return float(cfg.get("live_timeout", 7))
 
@@ -1599,6 +1610,8 @@ def _call_ollama(
         response = requests.post(_ollama_url(), json=payload, timeout=_bounded_timeout(timeout, "social"))
         response.raise_for_status()
         raw = extract_ollama_response_text(response.json())
+        if is_stale_ollama_response(prompt, raw, scope=f"thought:{model}:json"):
+            raw = ""
         latency_ms = max(1, int((time.perf_counter() - started) * 1000))
 
         # Only the Ollama response string may contain cognition. The outer API
@@ -1653,6 +1666,8 @@ def _call_ollama_plain(
         )
         response.raise_for_status()
         raw = extract_ollama_response_text(response.json())
+        if is_stale_ollama_response(prompt, raw, scope=f"thought:{model}:plain"):
+            raw = ""
         latency_ms = max(1, int((time.perf_counter() - started) * 1000))
         return raw, latency_ms
     except Exception:
