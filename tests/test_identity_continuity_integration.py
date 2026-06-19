@@ -1,6 +1,6 @@
 import json
 
-from src.modules.nan0.conversation_continuity import ConversationContinuity
+from src.modules.nan0.conversation_continuity import ConversationContinuity, ThreadPhase
 from src.modules.nan0.identity_memory import actor_ownership_from_event
 from src.modules.nan0.relationship_memory import RelationshipMemory
 from src.modules.nan0.session_timeline import SessionTimeline
@@ -79,6 +79,37 @@ def test_kyo_ownership_survives_context_assembly_and_prompt(monkeypatch):
     assert '"ownership_authority": "event"' in captured["prompt"]
 
 
+def test_historical_memory_actor_cannot_replace_current_event_owner(monkeypatch):
+    captured = {}
+    _install_fake_generation(monkeypatch, captured)
+    monkeypatch.setattr(thought_engine, "get_session_timeline_context", lambda: {})
+    monkeypatch.setattr(thought_engine, "get_conversation_continuity_context", lambda event: {})
+    monkeypatch.setattr(thought_engine, "get_relationship_memory_context", lambda actor_id: {})
+    monkeypatch.setattr(
+        thought_engine,
+        "_query_recent_memory",
+        lambda query, limit=4: [{
+            "kind": "retrieved_memory_fact",
+            "provider": "memory_storage",
+            "facts_only": True,
+            "content": "Nan0 watched an earlier failure.",
+            "source": {
+                "event_id": "event_historical_nan0",
+                "source": "nan0_speech",
+                "source_actor_id": "nan0",
+            },
+        }],
+    )
+
+    packet = thought_engine.generate_inner_thought_packet(_kyo_event())
+
+    assert packet["target_actor_id"] == "kyo"
+    assert packet["event_context"]["source_actor_id"] == "kyo"
+    assert packet["memory_context"][0]["source"]["source_actor_id"] == "nan0"
+    assert '"source_actor_id": "nan0"' in captured["prompt"]
+    assert '"ownership_authority": "event"' in captured["prompt"]
+
+
 def test_explicit_nan0_owner_outranks_source_family():
     ownership = actor_ownership_from_event({
         "event_id": "event_internal_forwarded",
@@ -89,6 +120,40 @@ def test_explicit_nan0_owner_outranks_source_family():
 
     assert ownership["source_actor_id"] == "nan0"
     assert ownership["ownership_authority"] == "event"
+
+
+def test_relationship_actor_identity_survives_database_reload(tmp_path):
+    db_path = tmp_path / "relationship.db"
+    relationship = RelationshipMemory(str(db_path))
+    relationship.record_moment("Kyo", "negative", "Kyo broke the generator again.", intensity=0.8)
+
+    restored = RelationshipMemory(str(db_path)).get_relationship_context("kyo")
+
+    assert restored["actor_id"] == "kyo"
+    assert restored["recent_moments"][0]["source_actor_id"] == "kyo"
+    assert restored["active_grudges"][0]["status"] == "active"
+
+
+def test_conversation_actor_identity_survives_dormant_thread_reload(tmp_path):
+    db_path = tmp_path / "conversation.db"
+    continuity = ConversationContinuity(str(db_path))
+    thread = continuity.process_input("Kyo", "The generator failed again.")
+    thread.phase = ThreadPhase.DORMANT
+    continuity._move_to_dormant(thread)
+
+    restored = ConversationContinuity(str(db_path))
+    context = restored.context_for_event({
+        "event_id": "event_kyo_returned",
+        "source": "kyo_voice",
+        "speaker": "Kyo",
+        "source_actor_id": "kyo",
+        "text": "Hey, it happened again.",
+        "addressed_to_nan0": True,
+    })
+
+    assert context["thread_id"] == thread.thread_id
+    assert context["current_event"]["source_actor_id"] == "kyo"
+    assert all(fact["source_actor_id"] == "kyo" for fact in context["recent_event_facts"])
 
 
 def test_relationship_memory_reaches_thought_generation(monkeypatch):
@@ -194,8 +259,10 @@ def test_retrieved_memory_is_source_aware_and_fact_only(monkeypatch):
 
     assert memories == [{
         "kind": "retrieved_memory_fact",
+        "fact_type": "authored_event",
         "provider": "memory_storage",
         "facts_only": True,
+        "generated_conclusion": False,
         "content": "Kyo said the generator failed.",
         "source": {
             "session_id": "session_1",
@@ -233,3 +300,41 @@ def test_continuity_memory_and_timeline_do_not_create_speech_packets(tmp_path):
     assert routed["decision"] == "suppress"
     assert routed["reason"] == "missing_thought_origin"
     assert routed["line"] == ""
+
+
+def test_goal_expectation_reflex_and_context_providers_remain_inert(monkeypatch):
+    event = _kyo_event()
+    event["_enriched_context"].update({
+        "expectation_context": {
+            "expected": "another failure",
+            "speech_packet": {"line_text": "forbidden"},
+        },
+        "goal_context": {
+            "goal": "watch the generator",
+            "decision": "speak",
+        },
+        "reflex_context": {
+            "trigger": "repeat_failure",
+            "line": "forbidden",
+        },
+    })
+    monkeypatch.setattr(
+        thought_engine,
+        "get_session_timeline_context",
+        lambda: {"provider": "session_timeline", "voice_enabled": True, "repeat_facts": []},
+    )
+    monkeypatch.setattr(
+        thought_engine,
+        "get_conversation_continuity_context",
+        lambda current: {"provider": "conversation_continuity", "route": "speech", "thread_id": "thread_1"},
+    )
+
+    context = thought_engine._read_continuity_context(event)
+    serialized = json.dumps(context)
+
+    for key in thought_engine._FORBIDDEN_PROVIDER_OUTPUT_KEYS:
+        assert f'"{key}"' not in serialized
+    assert context["event_continuity"]["expectation_context"]["expected"] == "another failure"
+    assert context["event_continuity"]["goal_context"]["goal"] == "watch the generator"
+    assert context["event_continuity"]["reflex_context"]["trigger"] == "repeat_failure"
+    assert context["actor_ownership"]["source_actor_id"] == "kyo"

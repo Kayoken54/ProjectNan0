@@ -24,6 +24,8 @@ from dataclasses import dataclass, asdict
 from typing import Optional, Dict, List, Tuple
 from enum import Enum
 
+from src.modules.nan0.identity_memory import normalize_actor_id
+
 
 class GrudgeStatus(Enum):
     ACTIVE = "active"
@@ -152,12 +154,24 @@ class RelationshipMemory:
         cursor.execute("SELECT * FROM relationships")
 
         for row in cursor.fetchall():
+            actor_id = normalize_actor_id(row[0])
+            raw_grudges = json.loads(row[4])
             record = RelationshipRecord(
-                actor_id=row[0],
+                actor_id=actor_id,
                 status=RelationshipStatus(row[1]),
                 emotional_balance=row[2],
                 moments=[EmotionalMoment(**m) for m in json.loads(row[3])],
-                grudges=[Grudge(**g) for g in json.loads(row[4])],
+                grudges=[
+                    Grudge(
+                        **{
+                            **g,
+                            "target_actor_id": normalize_actor_id(g.get("target_actor_id") or actor_id),
+                            "status": GrudgeStatus(g.get("status") or GrudgeStatus.ACTIVE.value),
+                        }
+                    )
+                    for g in raw_grudges
+                    if isinstance(g, dict)
+                ],
                 narrative_summary=row[5],
                 summary_last_updated=row[6],
                 total_positive_moments=row[7],
@@ -169,6 +183,7 @@ class RelationshipMemory:
         conn.close()
 
     def _save_record(self, record: RelationshipRecord):
+        record.actor_id = normalize_actor_id(record.actor_id)
         conn = sqlite3.connect(str(self.db_path))
         cursor = conn.cursor()
 
@@ -183,7 +198,10 @@ class RelationshipMemory:
             record.status.value,
             record.emotional_balance,
             json.dumps([asdict(m) for m in record.moments[-50:]]),  # Keep last 50
-            json.dumps([asdict(g) for g in record.grudges]),
+            json.dumps([
+                {**asdict(g), "status": g.status.value}
+                for g in record.grudges
+            ]),
             record.narrative_summary,
             record.summary_last_updated,
             record.total_positive_moments,
@@ -202,6 +220,7 @@ class RelationshipMemory:
         Record an emotional moment in a relationship.
         Called after significant interactions.
         """
+        actor_id = normalize_actor_id(actor_id)
         now = time.time()
 
         if actor_id not in self._cache:
@@ -298,6 +317,7 @@ class RelationshipMemory:
     def resolve_grudge(self, actor_id: str, grudge_id: str, 
                       resolution: str = "forgiven"):
         """Mark a grudge as resolved."""
+        actor_id = normalize_actor_id(actor_id)
         record = self._cache.get(actor_id)
         if not record:
             return
@@ -317,6 +337,7 @@ class RelationshipMemory:
 
     def nurture_grudge(self, actor_id: str, grudge_id: str):
         """Actively nurture a grudge (Nan0 chooses not to let it go)."""
+        actor_id = normalize_actor_id(actor_id)
         record = self._cache.get(actor_id)
         if not record:
             return
@@ -332,6 +353,7 @@ class RelationshipMemory:
 
     def get_active_grudges(self, actor_id: str) -> List[Grudge]:
         """Get all active grudges for an actor."""
+        actor_id = normalize_actor_id(actor_id)
         record = self._cache.get(actor_id)
         if not record:
             return []
@@ -343,6 +365,7 @@ class RelationshipMemory:
         Generate context for thought engine.
         Called from _build_json_thought_prompt().
         """
+        actor_id = normalize_actor_id(actor_id)
         record = self._cache.get(actor_id)
         if not record:
             return {}
@@ -370,7 +393,9 @@ class RelationshipMemory:
                 {
                     "type": m.event_type,
                     "description": m.description,
-                    "intensity": m.intensity
+                    "intensity": m.intensity,
+                    "source_actor_id": actor_id,
+                    "thought_id": m.thought_id,
                 }
                 for m in record.moments[-5:]
             ],
@@ -382,6 +407,7 @@ class RelationshipMemory:
         Generate an LLM summary of the relationship.
         Called periodically (e.g., nightly).
         """
+        actor_id = normalize_actor_id(actor_id)
         record = self._cache.get(actor_id)
         if not record or not self.llm_provider:
             return ""
@@ -428,6 +454,7 @@ and hides affection under hostility."""
         Check if input text triggers any active grudge.
         Called before thought generation.
         """
+        actor_id = normalize_actor_id(actor_id)
         active = self.get_active_grudges(actor_id)
         text_lower = text.lower()
 

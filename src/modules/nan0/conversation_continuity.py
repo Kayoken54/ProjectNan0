@@ -24,7 +24,7 @@ from dataclasses import dataclass, asdict, field
 from typing import Any, Optional, Dict, List, Tuple, Set
 from enum import Enum
 
-from src.modules.nan0.identity_memory import actor_ownership_from_event
+from src.modules.nan0.identity_memory import actor_ownership_from_event, normalize_actor_id
 
 
 class ThreadPhase(Enum):
@@ -146,13 +146,16 @@ class ConversationContinuity:
         conn.close()
 
     def _row_to_thread(self, row) -> ConversationThread:
+        messages = [ThreadMessage(**m) for m in json.loads(row[5])] if row[5] else []
+        for message in messages:
+            message.actor_id = normalize_actor_id(message.actor_id)
         return ConversationThread(
             thread_id=row[0],
             created_at=row[1],
             last_active=row[2],
             phase=ThreadPhase(row[3]),
-            participants=set(json.loads(row[4])) if row[4] else set(),
-            messages=[ThreadMessage(**m) for m in json.loads(row[5])] if row[5] else [],
+            participants={normalize_actor_id(actor_id) for actor_id in json.loads(row[4])} if row[4] else set(),
+            messages=messages,
             topic=row[6],
             emotional_arc=json.loads(row[7]) if row[7] else [],
             unresolved_questions=json.loads(row[8]) if row[8] else [],
@@ -204,6 +207,7 @@ class ConversationContinuity:
         Process an input and return the thread it belongs to.
         This is the main entry point called from _build_pressure_event().
         """
+        actor_id = normalize_actor_id(actor_id)
         now = time.time()
 
         # Check for reactivation
@@ -508,6 +512,7 @@ class ConversationContinuity:
 
     def get_active_threads_for_actor(self, actor_id: str) -> List[ConversationThread]:
         """Get all active threads involving an actor."""
+        actor_id = normalize_actor_id(actor_id)
         return [
             t for t in self._active_threads.values()
             if actor_id in t.participants

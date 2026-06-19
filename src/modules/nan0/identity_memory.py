@@ -49,9 +49,13 @@ def load_identity_memory() -> Dict[str, Any]:
         data = json.loads(IDENTITY_PATH.read_text(encoding="utf-8"))
     except Exception:
         data = json.loads(json.dumps(DEFAULT_MEMORY))
+    if not isinstance(data, dict):
+        data = json.loads(json.dumps(DEFAULT_MEMORY))
     # Merge defaults without destroying user-learned data.
-    data.setdefault("actors", {})
-    data.setdefault("rules", {})
+    if not isinstance(data.get("actors"), dict):
+        data["actors"] = {}
+    if not isinstance(data.get("rules"), dict):
+        data["rules"] = {}
     for actor, value in DEFAULT_MEMORY["actors"].items():
         data["actors"].setdefault(actor, value)
         if isinstance(data["actors"][actor], dict):

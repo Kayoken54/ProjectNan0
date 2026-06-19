@@ -127,9 +127,13 @@ class MemoryStorage:
         if not self.collection:
             return None
 
+        count = self.collection.count()
+        if count <= 0:
+            return None
+
         return self.collection.query(
             query_texts=[query],
-            n_results=limit,
+            n_results=min(max(1, int(limit)), count),
             include=[
                 "documents",
                 "metadatas",

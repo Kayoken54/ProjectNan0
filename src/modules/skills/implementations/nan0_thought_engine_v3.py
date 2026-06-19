@@ -313,14 +313,64 @@ def _read_vision_context(explicit: Optional[Dict[str, Any]] = None) -> Dict[str,
     return data if isinstance(data, dict) else {}
 
 
+_FORBIDDEN_PROVIDER_OUTPUT_KEYS = {
+    "decision",
+    "display_enabled",
+    "line",
+    "line_text",
+    "output_packet",
+    "private_text",
+    "prompt",
+    "route",
+    "routing",
+    "routing_decision",
+    "speech_packet",
+    "spoken_line",
+    "spoken_text",
+    "thought_packet",
+    "thought_text",
+    "tts",
+    "voice_enabled",
+}
+
+
+def _sanitize_context_value(value: Any, depth: int = 0) -> Any:
+    """Keep provider data inert before it reaches thought prompt assembly."""
+    if depth > 8:
+        return None
+    if isinstance(value, dict):
+        sanitized: Dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text.strip().lower() in _FORBIDDEN_PROVIDER_OUTPUT_KEYS:
+                continue
+            clean_item = _sanitize_context_value(item, depth + 1)
+            if clean_item is not None:
+                sanitized[key_text] = clean_item
+        return sanitized
+    if isinstance(value, (list, tuple)):
+        return [
+            clean_item
+            for item in value
+            if (clean_item := _sanitize_context_value(item, depth + 1)) is not None
+        ]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return None
+
+
 def _context_dict(value: Any) -> Dict[str, Any]:
-    """Accept provider mappings only; reject incompatible context shapes."""
-    return value if isinstance(value, dict) else {}
+    """Accept inert provider mappings only; reject incompatible shapes."""
+    sanitized = _sanitize_context_value(value)
+    return sanitized if isinstance(sanitized, dict) else {}
 
 
 def _context_list(value: Any) -> List[Any]:
-    """Accept provider lists only; reject incompatible context shapes."""
-    return value if isinstance(value, list) else []
+    """Accept inert provider lists only; reject incompatible shapes."""
+    if not isinstance(value, list):
+        return []
+    sanitized = _sanitize_context_value(value)
+    return sanitized if isinstance(sanitized, list) else []
 
 
 
@@ -355,7 +405,7 @@ def _read_enriched_continuity_context(event: Optional[Dict[str, Any]] = None) ->
     for key in allowed_keys:
         value = enriched.get(key)
         if isinstance(value, (dict, list, str, int, float, bool)) or value is None:
-            continuity[key] = value
+            continuity[key] = _sanitize_context_value(value)
 
     return continuity
 
@@ -449,30 +499,58 @@ def _query_recent_memory(query: str, limit: int = 4) -> List[Dict[str, Any]]:
         )
         if not storage.initialize():
             return []
-        result = storage.query_similar(query or "Nan0 recent context", limit=limit)
+        result = storage.query_similar(query or "Nan0 recent context", limit=max(limit * 3, limit))
         if not isinstance(result, dict):
             return []
         docs = result.get("documents") or []
         metas = result.get("metadatas") or []
         distances = result.get("distances") or []
+        ids = result.get("ids") or []
         doc_row = docs[0] if docs and isinstance(docs[0], list) else docs
         meta_row = metas[0] if metas and isinstance(metas[0], list) else metas
         distance_row = distances[0] if distances and isinstance(distances[0], list) else distances
+        id_row = ids[0] if ids and isinstance(ids[0], list) else ids
 
         memories: List[Dict[str, Any]] = []
-        for index, document in enumerate(doc_row[:limit]):
+        for index, document in enumerate(doc_row):
+            if len(memories) >= limit:
+                break
             if not document:
                 continue
             metadata = meta_row[index] if index < len(meta_row) and isinstance(meta_row[index], dict) else {}
+            memory_kind = str(metadata.get("memory_kind") or metadata.get("kind") or "").strip().lower()
+            facts_only = metadata.get("facts_only")
+            source_actor_id = str(metadata.get("source_actor_id") or "").strip()
+            event_id = str(metadata.get("event_id") or "").strip()
+            is_generated_summary = (
+                facts_only is False
+                or memory_kind in {"diary", "generated_summary", "generated_session_summary", "session_summary"}
+            )
+            is_source_aware_fact = bool(source_actor_id and event_id) and facts_only is not False
+            if is_generated_summary or not is_source_aware_fact or not source_actor_id:
+                continue
+
+            if normalize_actor_id is not None:
+                source_actor_id = normalize_actor_id(source_actor_id, str(metadata.get("source") or ""))
+            else:
+                source_actor_id = source_actor_id.lower()
             source = {
                 key: metadata.get(key)
-                for key in ("session_id", "event_id", "date", "timestamp", "user_id", "source", "source_actor_id")
+                for key in (
+                    "session_id", "event_id", "date", "timestamp", "user_id",
+                    "source", "source_actor_id", "character_id", "memory_kind", "role",
+                )
                 if metadata.get(key) is not None
             }
+            source["source_actor_id"] = source_actor_id
+            if index < len(id_row) and id_row[index]:
+                source["memory_id"] = str(id_row[index])
             item: Dict[str, Any] = {
                 "kind": "retrieved_memory_fact",
+                "fact_type": "authored_event",
                 "provider": "memory_storage",
                 "facts_only": True,
+                "generated_conclusion": False,
                 "content": str(document)[:500],
                 "source": source,
             }
@@ -1719,6 +1797,7 @@ def _read_continuity_context(event: Optional[Dict[str, Any]] = None) -> Dict[str
         except Exception:
             timeline = {}
         if isinstance(timeline, dict):
+            timeline = _context_dict(timeline)
             # Keep only the compact recurrence fields at the root for existing
             # consumers; the complete snapshot remains namespaced once.
             for key in ("repeat_counts", "repeat_facts", "recent_topics"):
@@ -1736,7 +1815,7 @@ def _read_continuity_context(event: Optional[Dict[str, Any]] = None) -> Dict[str
         try:
             candidate = get_conversation_continuity_context(event)
             if isinstance(candidate, dict):
-                persistent_thread = candidate
+                persistent_thread = _context_dict(candidate)
         except Exception:
             persistent_thread = {}
     if attached_thread or persistent_thread:
