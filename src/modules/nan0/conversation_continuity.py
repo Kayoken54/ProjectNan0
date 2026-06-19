@@ -21,8 +21,10 @@ import time
 import uuid
 from pathlib import Path
 from dataclasses import dataclass, asdict, field
-from typing import Optional, Dict, List, Tuple, Set
+from typing import Any, Optional, Dict, List, Tuple, Set
 from enum import Enum
+
+from src.modules.nan0.identity_memory import actor_ownership_from_event
 
 
 class ThreadPhase(Enum):
@@ -94,6 +96,7 @@ class ConversationContinuity:
         self._active_threads: Dict[str, ConversationThread] = {}
         self._dormant_threads: Dict[str, ConversationThread] = {}
         self._actor_current_thread: Dict[str, str] = {}  # actor_id -> thread_id
+        self._event_threads: Dict[str, str] = {}
         self._init_db()
         self._load_dormant_threads()
 
@@ -398,19 +401,30 @@ class ConversationContinuity:
 
         # Get recent messages (last 5)
         recent_messages = []
+        recent_event_facts = []
         for msg in thread.messages[-5:]:
             actor = "Kyo" if msg.actor_id == "kyo" else msg.actor_id
             recent_messages.append(f"[{actor}]: {msg.text}")
+            recent_event_facts.append({
+                "timestamp": msg.timestamp,
+                "source_actor_id": msg.actor_id,
+                "text": msg.text,
+                "thought_id": msg.thought_id,
+                "addressed_to_nan0": msg.addressed_to_nan0,
+            })
 
         # Determine if this is a reactivation
         is_reactivation = thread.reactivation_count > 0 and thread.phase == ThreadPhase.OPENING
 
         return {
+            "provider": "conversation_continuity",
+            "facts_only": True,
             "thread_id": thread.thread_id,
             "phase": thread.phase.value,
             "message_count": thread.message_count,
             "participants": list(thread.participants),
             "recent_messages": recent_messages,
+            "recent_event_facts": recent_event_facts,
             "topic": thread.topic or "unknown",
             "unresolved_questions": thread.unresolved_questions[-3:] if thread.unresolved_questions else [],
             "interrupted_topics": thread.interrupted_topics[-2:] if thread.interrupted_topics else [],
@@ -419,6 +433,54 @@ class ConversationContinuity:
             "reactivation_count": thread.reactivation_count,
             "seconds_since_start": round(time.time() - thread.created_at, 1),
         }
+
+    def context_for_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Record one event and return fact-only conversation continuity.
+
+        Current-event ownership comes exclusively from the identity contract.
+        This provider records and returns context; it never generates a thought
+        or speech packet.
+        """
+        if not isinstance(event, dict):
+            return {}
+
+        ownership = actor_ownership_from_event(event)
+        actor_id = str(ownership.get("source_actor_id") or "unknown")
+        event_id = str(event.get("event_id") or "").strip()
+        text = str(event.get("text") or event.get("message") or "").strip()
+
+        thread_id = self._event_threads.get(event_id) if event_id else None
+        if thread_id:
+            context = self.get_thread_context(thread_id)
+        elif text:
+            thread = self.process_input(
+                actor_id=actor_id,
+                text=text,
+                mood=event.get("mood"),
+                thought_id=event.get("thought_id"),
+                addressed_to_nan0=bool(event.get("addressed_to_nan0")),
+            )
+            thread_id = thread.thread_id
+            if event_id:
+                self._event_threads[event_id] = thread_id
+                if len(self._event_threads) > 400:
+                    oldest = next(iter(self._event_threads))
+                    self._event_threads.pop(oldest, None)
+            context = self.get_thread_context(thread_id)
+        else:
+            current_thread_id = self._actor_current_thread.get(actor_id)
+            context = self.get_thread_context(current_thread_id) if current_thread_id else {}
+
+        if not context:
+            return {}
+
+        context["current_event"] = {
+            "event_id": event.get("event_id"),
+            "source": event.get("source"),
+            "source_actor_id": actor_id,
+            "addressed_to_nan0": bool(event.get("addressed_to_nan0")),
+        }
+        return context
 
     def add_unresolved_question(self, thread_id: str, question: str):
         """Add an unresolved question to a thread."""
@@ -463,3 +525,14 @@ class ConversationContinuity:
             }
             for t in self._dormant_threads.values()
         ]
+
+
+_default_continuity: Optional[ConversationContinuity] = None
+
+
+def get_conversation_continuity_context(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Lazy module-level context provider used by thought generation."""
+    global _default_continuity
+    if _default_continuity is None:
+        _default_continuity = ConversationContinuity()
+    return _default_continuity.context_for_event(event)

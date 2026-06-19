@@ -13,6 +13,8 @@ from dataclasses import asdict, dataclass, field
 from threading import RLock
 from typing import Any, Dict, List, Optional
 
+from src.modules.nan0.identity_memory import actor_ownership_from_event
+
 
 MAX_SESSION_EVENTS = 100
 CONTEXT_EVENT_LIMIT = 20
@@ -73,6 +75,8 @@ class SessionTimeline:
             "event_id": packet.get("event_id"),
             "source": packet.get("source"),
             "thought_type": packet.get("thought_type"),
+            "source_actor_id": "nan0",
+            "target_actor_id": packet.get("target_actor_id") or packet.get("target_actor"),
         }
         tags = self._topic_tags(
             packet.get("thought_type"),
@@ -86,7 +90,7 @@ class SessionTimeline:
             TimelineItem(
                 timestamp=float(packet.get("created_at") or time.time()),
                 event_type=str(packet.get("thought_type") or "thought"),
-                actor=str(packet.get("target_actor_id") or packet.get("target_actor") or packet.get("source") or "unknown"),
+                actor="nan0",
                 summary=summary[:280],
                 raw_ref=raw_ref,
                 significance=significance,
@@ -114,12 +118,13 @@ class SessionTimeline:
             for key in ("thought_id", "source_thought_id", "mood", "target_actor_id", "voice_enabled", "display_enabled")
             if packet.get(key) is not None
         }
+        raw_ref["source_actor_id"] = "nan0"
         tags = self._topic_tags("speech", packet.get("target_actor_id"), packet.get("mood"), packet.get("tags") or [])
         return self.add_item(
             TimelineItem(
                 timestamp=float(packet.get("created_at") or packet.get("timestamp") or time.time()),
                 event_type="speech",
-                actor=str(packet.get("target_actor_id") or packet.get("actor") or "nan0"),
+                actor="nan0",
                 summary=line[:280],
                 raw_ref=raw_ref,
                 significance=self._float_or_none(packet.get("speakability")),
@@ -144,6 +149,8 @@ class SessionTimeline:
         repeat_facts.extend(self._facts(tags, "topic"))
 
         return {
+            "provider": "session_timeline",
+            "facts_only": True,
             "recent_event_count": len(items),
             "retained_event_count": len(all_items),
             "max_event_count": self.max_events,
@@ -164,7 +171,8 @@ class SessionTimeline:
 
         source = str(event.get("source") or event.get("event_type") or "unknown").strip()
         text = str(event.get("summary") or event.get("text") or event.get("message") or "").strip()
-        actor = str(event.get("source_actor_id") or event.get("actor") or event.get("speaker") or source or "unknown").strip()
+        ownership = actor_ownership_from_event(event)
+        actor = str(ownership.get("source_actor_id") or "unknown")
         event_type = str(
             event.get("event_type")
             or event.get("type")
@@ -194,6 +202,7 @@ class SessionTimeline:
             for key in ("event_id", "source", "priority", "thought_id", "screen_state", "game_ui_detected", "mood")
             if event.get(key) is not None
         }
+        raw_ref["source_actor_id"] = actor
 
         return TimelineItem(
             timestamp=float(event.get("timestamp") or event.get("time") or time.time()),

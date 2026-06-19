@@ -63,7 +63,7 @@ def test_repeated_event_types_and_actors_are_counted():
 
     context = timeline.continuity_context()
     assert context["repeat_counts"]["event_type"]["Kyo_death"] == 3
-    assert context["repeat_counts"]["actor"]["Kyo"] == 2
+    assert context["repeat_counts"]["actor"]["kyo"] == 2
     assert {fact["value"]: fact["count"] for fact in context["repeat_facts"]}["Kyo_death"] == 3
 
 
@@ -162,11 +162,13 @@ def test_speech_packets_are_logged_only_with_thought_id():
 
 
 def test_speech_still_requires_thought_id():
-    from src.modules.nan0 import output_normalizer
+    from src.modules.skills.implementations.nan0_cognition_router_v1 import route_thought
 
     packet = {"line_text": "No thought origin. No voice.", "mood": "muttering"}
-    assert output_normalizer.validate_thought_id(packet) is False
-    assert output_normalizer.normalize_speech_packet(packet) is None
+    decision = route_thought(packet)
+    assert decision["decision"] == "suppress"
+    assert decision["reason"] == "missing_thought_origin"
+    assert decision["line"] == ""
 
 
 def test_no_direct_event_to_speech_shortcut_in_timeline():

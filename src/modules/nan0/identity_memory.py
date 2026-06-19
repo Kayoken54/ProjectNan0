@@ -166,3 +166,29 @@ def actor_perspective_contract(actor_id: str, source: str = "") -> Dict[str, Any
         "ownership_rule": "Do not convert another actor's first-person statement into Nan0's memory or action.",
         "pronouns": [],
     }
+
+
+def actor_ownership_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the authoritative ownership contract from top-level event fields.
+
+    Enrichment and continuity payloads are deliberately ignored here. They may
+    describe historical actors, but they do not own the current event.
+    """
+    if not isinstance(event, dict):
+        event = {}
+
+    source = str(event.get("source") or "").strip()
+    explicit_actor = event.get("source_actor_id")
+    raw_actor = str(
+        explicit_actor
+        or event.get("speaker")
+        or source
+        or "unknown"
+    ).strip()
+    # An explicit event actor outranks source-family heuristics. The source is
+    # still retained for audit, but cannot reassign an already-owned event.
+    contract = actor_perspective_contract(raw_actor, "" if explicit_actor else source)
+    contract["event_id"] = event.get("event_id")
+    contract["source"] = source or "unknown"
+    contract["ownership_authority"] = "event"
+    return contract

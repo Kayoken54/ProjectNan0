@@ -350,6 +350,8 @@ class RelationshipMemory:
         active_grudges = self.get_active_grudges(actor_id)
 
         return {
+            "provider": "relationship_memory",
+            "facts_only": True,
             "actor_id": actor_id,
             "relationship_status": record.status.value,
             "emotional_balance": round(record.emotional_balance, 2),
@@ -434,3 +436,14 @@ and hides affection under hostility."""
                 return grudge
 
         return None
+
+
+_default_relationship_memory: Optional[RelationshipMemory] = None
+
+
+def get_relationship_memory_context(actor_id: str) -> Dict:
+    """Lazy fact-only relationship provider for thought generation."""
+    global _default_relationship_memory
+    if _default_relationship_memory is None:
+        _default_relationship_memory = RelationshipMemory()
+    return _default_relationship_memory.get_relationship_context(actor_id)

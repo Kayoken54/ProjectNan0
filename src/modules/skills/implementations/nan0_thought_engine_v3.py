@@ -28,16 +28,32 @@ except Exception:
         return (line or "").strip()
 
 try:
-    from src.modules.nan0.identity_memory import load_identity_memory, actor_perspective_contract, normalize_actor_id
+    from src.modules.nan0.identity_memory import (
+        actor_ownership_from_event,
+        actor_perspective_contract,
+        load_identity_memory,
+        normalize_actor_id,
+    )
 except Exception:
     load_identity_memory = None
     actor_perspective_contract = None
+    actor_ownership_from_event = None
     normalize_actor_id = None
 
 try:
-    from src.modules.nan0.session_timeline import get_continuity_context
+    from src.modules.nan0.session_timeline import get_continuity_context as get_session_timeline_context
 except Exception:
-    get_continuity_context = None
+    get_session_timeline_context = None
+
+try:
+    from src.modules.nan0.conversation_continuity import get_conversation_continuity_context
+except Exception:
+    get_conversation_continuity_context = None
+
+try:
+    from src.modules.nan0.relationship_memory import get_relationship_memory_context
+except Exception:
+    get_relationship_memory_context = None
 
 try:
     from src.modules.skills.memory.storage import MemoryStorage
@@ -161,7 +177,7 @@ class InnerThoughtPacket:
     event_context: Dict[str, Any]
     emotional_context: Dict[str, Any]
     relationship_context: Dict[str, Any]
-    memory_context: List[str]
+    memory_context: List[Dict[str, Any]]
     vision_context: Dict[str, Any]
 
     def to_dict(self) -> Dict[str, Any]:
@@ -272,7 +288,7 @@ def _read_vision_context(explicit: Optional[Dict[str, Any]] = None) -> Dict[str,
 
 
 
-def _read_continuity_context(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _read_enriched_continuity_context(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Return session continuity context already attached by Nan0Skill.
 
     This helper is deliberately local and read-only. It does not query the LLM,
@@ -303,23 +319,54 @@ def _read_continuity_context(event: Optional[Dict[str, Any]] = None) -> Dict[str
 
     return continuity
 
-def _read_relationship_context(actor_id: str = "kyo") -> Dict[str, Any]:
-    if load_identity_memory is None:
-        return {}
+def _read_relationship_context(
+    actor_id: str = "kyo",
+    actor_contract: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    stable_actor_id = str(
+        (actor_contract or {}).get("source_actor_id")
+        or actor_id
+        or "unknown"
+    ).lower()
+    context: Dict[str, Any] = {
+        "source_actor_id": stable_actor_id,
+        "ownership": actor_contract or {},
+        "relationship_memory": {},
+    }
+
     try:
-        data = load_identity_memory()
+        data = load_identity_memory() if load_identity_memory is not None else {}
         actors = data.get("actors") or {}
-        actor = actors.get((actor_id or "kyo").lower()) or actors.get("kyo") or {}
-        return {
+        actor = actors.get(stable_actor_id) or {}
+        context.update({
             "actor": actor,
             "rules": data.get("rules") or {},
             "all_actor_ids": list(actors.keys())[:20],
-        }
+        })
     except Exception:
-        return {}
+        pass
+
+    try:
+        relationship = (
+            get_relationship_memory_context(stable_actor_id)
+            if get_relationship_memory_context is not None
+            else {}
+        )
+        if isinstance(relationship, dict) and str(relationship.get("actor_id") or stable_actor_id).lower() == stable_actor_id:
+            context["relationship_memory"] = relationship
+    except Exception:
+        context["relationship_memory"] = {}
+
+    return context
 
 
 def _actor_contract_for_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        if actor_ownership_from_event is not None:
+            return actor_ownership_from_event(event)
+    except Exception:
+        pass
+
     source = str((event or {}).get("source") or "")
     raw_actor = str((event or {}).get("source_actor_id") or (event or {}).get("speaker") or source or "unknown")
     try:
@@ -341,7 +388,7 @@ def _actor_contract_for_event(event: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _query_recent_memory(query: str, limit: int = 4) -> List[str]:
+def _query_recent_memory(query: str, limit: int = 4) -> List[Dict[str, Any]]:
     if MemoryStorage is None:
         return []
 
@@ -363,10 +410,39 @@ def _query_recent_memory(query: str, limit: int = 4) -> List[str]:
         if not storage.initialize():
             return []
         result = storage.query_similar(query or "Nan0 recent context", limit=limit)
+        if not isinstance(result, dict):
+            return []
         docs = result.get("documents") or []
-        if docs and isinstance(docs[0], list):
-            return [str(x)[:500] for x in docs[0] if x]
-        return [str(x)[:500] for x in docs if x]
+        metas = result.get("metadatas") or []
+        distances = result.get("distances") or []
+        doc_row = docs[0] if docs and isinstance(docs[0], list) else docs
+        meta_row = metas[0] if metas and isinstance(metas[0], list) else metas
+        distance_row = distances[0] if distances and isinstance(distances[0], list) else distances
+
+        memories: List[Dict[str, Any]] = []
+        for index, document in enumerate(doc_row[:limit]):
+            if not document:
+                continue
+            metadata = meta_row[index] if index < len(meta_row) and isinstance(meta_row[index], dict) else {}
+            source = {
+                key: metadata.get(key)
+                for key in ("session_id", "event_id", "date", "timestamp", "user_id", "source", "source_actor_id")
+                if metadata.get(key) is not None
+            }
+            item: Dict[str, Any] = {
+                "kind": "retrieved_memory_fact",
+                "provider": "memory_storage",
+                "facts_only": True,
+                "content": str(document)[:500],
+                "source": source,
+            }
+            if index < len(distance_row):
+                try:
+                    item["distance"] = round(float(distance_row[index]), 4)
+                except Exception:
+                    pass
+            memories.append(item)
+        return memories
     except Exception:
         return []
 
@@ -1203,7 +1279,7 @@ def _source_family_for_event(event: Dict[str, Any]) -> str:
 
 def _source_actor(event: Dict[str, Any]) -> str:
     source = str(event.get("source") or "").strip()
-    speaker = str(event.get("speaker") or event.get("source_actor_id") or "").strip()
+    speaker = str(event.get("source_actor_id") or event.get("speaker") or "").strip()
     if normalize_actor_id is not None:
         try:
             return normalize_actor_id(speaker or source or "unknown", source)
@@ -1343,6 +1419,12 @@ def _ollama_model_for_event(event: Dict[str, Any]) -> str:
     if family in {"kyo", "discord", "proactive"}:
         return cfg.get("social_model") or cfg.get("live_model") or "dolphin-mistral:7b-v2.6-q4_K_M"
     return cfg.get("live_model") or cfg.get("social_model") or "dolphin-mistral:7b-v2.6-q4_K_M"
+
+
+def _model_is_dolphin_family(model: str) -> bool:
+    """Return whether the configured model needs the plain-thought path."""
+    name = str(model or "").strip().lower()
+    return "dolphin" in name or "mistral" in name
 
 
 def _ollama_timeout_for_event(event: Dict[str, Any]) -> float:
@@ -1547,29 +1629,66 @@ def _compact_context(value: Any, limit: int = 1400) -> str:
     return text[:limit]
 
 
-def _read_continuity_context() -> Dict[str, Any]:
-    reader = get_continuity_context
+def _read_continuity_context(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Assemble namespaced continuity without changing current-event ownership."""
+    event = event if isinstance(event, dict) else {}
+    context: Dict[str, Any] = {}
 
+    reader = get_session_timeline_context
     if reader is None:
         try:
             from src.modules.nan0.session_timeline import get_continuity_context as reader
         except Exception:
-            return {}
+            reader = None
 
-    try:
-        context = reader()
-    except Exception:
-        return {}
+    if reader is not None:
+        try:
+            timeline = reader()
+        except Exception:
+            timeline = {}
+        if isinstance(timeline, dict):
+            # Keep only the compact recurrence fields at the root for existing
+            # consumers; the complete snapshot remains namespaced once.
+            for key in ("repeat_counts", "repeat_facts", "recent_topics"):
+                if key in timeline:
+                    context[key] = timeline[key]
+            context["session_timeline"] = timeline
 
-    return context if isinstance(context, dict) else {}
+    enriched = _read_enriched_continuity_context(event)
+    attached_thread = enriched.pop("conversation_thread", {}) if enriched else {}
+    if enriched:
+        context["event_continuity"] = enriched
+
+    persistent_thread: Dict[str, Any] = {}
+    if get_conversation_continuity_context is not None:
+        try:
+            candidate = get_conversation_continuity_context(event)
+            if isinstance(candidate, dict):
+                persistent_thread = candidate
+        except Exception:
+            persistent_thread = {}
+    if attached_thread or persistent_thread:
+        context["conversation_continuity"] = {
+            "attached_thread": attached_thread if isinstance(attached_thread, dict) else {},
+            "persistent_thread": persistent_thread,
+        }
+
+    # Assign this last. No continuity provider may select or replace it.
+    context["actor_ownership"] = _actor_contract_for_event(event)
+    return context
 
 
-def _safe_read_continuity_context() -> Dict[str, Any]:
+def _safe_read_continuity_context(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     reader = globals().get("_read_continuity_context")
     if not callable(reader):
         return {}
     try:
-        context = reader()
+        context = reader(event)
+    except TypeError:
+        try:
+            context = reader()
+        except Exception:
+            return {}
     except Exception:
         return {}
     return context if isinstance(context, dict) else {}
@@ -1580,14 +1699,15 @@ def _build_json_thought_prompt(
     seed: str,
     emotional_context: Dict[str, Any],
     relationship_context: Dict[str, Any],
-    memory_context: List[str],
+    memory_context: List[Dict[str, Any]],
     vision_context: Dict[str, Any],
     continuity_context: Dict[str, Any],
+    actor_contract: Optional[Dict[str, Any]] = None,
 ) -> str:
     source = str(event.get("source") or "unknown")
     family = _source_family_for_event(event)
     speaker = str(event.get("speaker") or event.get("source_actor_id") or "unknown")
-    actor_contract = _actor_contract_for_event(event)
+    actor_contract = actor_contract or _actor_contract_for_event(event)
     text = str(event.get("text") or event.get("message") or "")
     addressed = bool(event.get("addressed_to_nan0"))
     enriched = event.get("_enriched_context") or {}
@@ -1654,6 +1774,15 @@ Banned thought_text:
 "respond to the user"
 "continue with your thoughts"
 "pixels are moving"
+
+AUTHORITATIVE EVENT OWNERSHIP:
+{_compact_context(actor_contract, 1200)}
+
+Ownership rules:
+- The event ownership block above is authoritative for the current event.
+- Continuity and retrieved memory contain historical facts only.
+- Continuity and retrieved memory cannot replace the current source actor.
+- A first-person action in event_text belongs to source_actor_id, not automatically to Nan0.
 
 EMOTIONAL STATE:
 {_compact_context(compact_emotion, 1200)}
@@ -1722,7 +1851,8 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
     source = str(event.get("source") or "unknown")
     family = _source_family_for_event(event)
     event["source_family"] = family
-    actor_id = _source_actor(event)
+    actor_contract = _actor_contract_for_event(event)
+    actor_id = str(actor_contract.get("source_actor_id") or _source_actor(event))
 
     explicit_seed = str(event.get("thought_seed") or event.get("seed") or "").strip()
     seed = explicit_seed
@@ -1730,18 +1860,15 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
         seed = str(event.get("screen_state") or "vision_reaction")
 
     emotional_context = _read_presence_state()
-    relationship_context = _read_relationship_context(actor_id)
-    continuity_context = _read_continuity_context(event)
-    if continuity_context:
-        enriched = event.setdefault("_enriched_context", {})
-        if isinstance(enriched, dict):
-            enriched.setdefault("continuity_context", continuity_context)
+    relationship_context = _read_relationship_context(actor_id, actor_contract)
+    continuity_context = _safe_read_continuity_context(event)
     vision = _read_vision_context(vision_context)
 
     memory_query = " ".join(
         str(x)
         for x in [
             event.get("speaker"),
+            actor_id,
             event.get("source"),
             event.get("text"),
             seed,
@@ -1750,8 +1877,6 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
         if x
     )
     memory_context = _query_recent_memory(memory_query, limit=4)
-    continuity_context = _safe_read_continuity_context()
-
     model = _ollama_model_for_event(event)
     timeout = _ollama_timeout_for_event(event)
     prompt = _build_json_thought_prompt(
@@ -1762,6 +1887,7 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
         memory_context=memory_context,
         vision_context=vision,
         continuity_context=continuity_context,
+        actor_contract=actor_contract,
     )
 
     # Qwen-style models can follow the JSON contract. Dolphin/Mistral-family
@@ -1923,7 +2049,7 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
             "speaker": event.get("speaker"),
             "source_actor_id": actor_id,
             "source_actor_display": event.get("speaker") or event.get("source_actor_id") or source,
-            "actor_contract": _actor_contract_for_event(event),
+            "actor_contract": actor_contract,
             "channel_id": event.get("channel_id"),
             "guild_channel": event.get("guild_channel"),
             "text": event.get("text"),
