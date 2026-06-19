@@ -1,15 +1,30 @@
 import asyncio
 import json
 
+import pytest
+
 from src.core.config import BrainConfig
+from src.modules.llm import ollama_provider
 from src.modules.skills.implementations import nan0_skill as nan0_skill_module
 from src.modules.skills.implementations import nan0_thought_engine_v3 as thought_engine
+from src.modules.skills.implementations.nan0_cognition_router_v1 import route_thought
 from src.modules.skills.implementations.nan0_skill import Nan0Skill
 
 
 class _FakeBrain:
     async def perform_output_task(self, mood, message, speech_packet=None):
         raise AssertionError("thought creation must not produce output")
+
+
+class _FakeOllamaResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
 
 
 def _model_payload(text):
@@ -59,6 +74,53 @@ def test_ollama_json_adapter_consumes_live_three_value_contract(monkeypatch):
     assert parsed == expected[0]
     assert raw == expected[1]
     assert latency_ms == expected[2]
+
+
+def test_thought_http_adapter_calls_model_and_extracts_valid_response(monkeypatch):
+    payload = _model_payload("The adapter finally carried my thought through.")[0]
+    response_text = json.dumps(payload)
+    captured = {}
+
+    def fake_post(url, json, timeout):
+        captured["url"] = url
+        captured["request"] = json
+        captured["timeout"] = timeout
+        return _FakeOllamaResponse({"response": response_text, "done": True})
+
+    monkeypatch.setattr(thought_engine.requests, "post", fake_post)
+
+    parsed, raw, latency_ms = thought_engine._call_ollama(
+        "thought prompt", "qwen2.5:3b", 18, num_predict=180
+    )
+
+    assert parsed == payload
+    assert json.loads(raw) == payload
+    assert latency_ms >= 1
+    assert captured["timeout"] == 18.0
+    assert captured["request"]["options"]["num_predict"] == 180
+
+
+def test_ollama_provider_extracts_only_valid_generate_response(monkeypatch):
+    requests_sent = []
+    responses = iter([
+        _FakeOllamaResponse({"response": "  {\"thought_text\": \"Still here.\"}  "}),
+        _FakeOllamaResponse({"response": None}),
+        _FakeOllamaResponse(["malformed", "transport"]),
+        _FakeOllamaResponse({"response": "spoken text"}),
+    ])
+
+    def fake_post(*args, **kwargs):
+        requests_sent.append(kwargs["json"])
+        return next(responses)
+
+    monkeypatch.setattr(ollama_provider.requests, "post", fake_post)
+    provider = ollama_provider.OllamaLLM(model_name="qwen2.5:3b")
+
+    assert provider._generate("prompt", json_hint=True) == '{"thought_text": "Still here."}'
+    assert provider._generate("prompt", json_hint=True) == ""
+    assert provider._generate("prompt", json_hint=True) == ""
+    assert provider._generate("prompt", json_hint=False, num_predict=180) == "spoken text"
+    assert requests_sent[-1]["options"]["num_predict"] == 110
 
 
 def test_kyo_runtime_input_produces_valid_private_thought_packet(monkeypatch):
@@ -251,3 +313,54 @@ def test_malformed_model_adapter_shape_is_rejected_at_adapter_boundary(monkeypat
     assert parsed == {}
     assert raw == ""
     assert latency_ms == 0
+
+
+@pytest.mark.parametrize("provider_payload", [{"response": None}, {"message": "wrong key"}, ["wrong shape"]])
+def test_empty_or_malformed_model_output_suppresses_without_speech(monkeypatch, provider_payload):
+    monkeypatch.setattr(thought_engine, "_read_presence_state", lambda: {})
+    monkeypatch.setattr(thought_engine, "_read_vision_context", lambda explicit=None: {})
+    monkeypatch.setattr(thought_engine, "_query_recent_memory", lambda query, limit=4: [])
+    monkeypatch.setattr(thought_engine, "get_session_timeline_context", lambda: {})
+    monkeypatch.setattr(thought_engine, "get_conversation_continuity_context", lambda event: {})
+    monkeypatch.setattr(thought_engine, "get_relationship_memory_context", lambda actor_id: {})
+    monkeypatch.setattr(
+        thought_engine.requests,
+        "post",
+        lambda *args, **kwargs: _FakeOllamaResponse(provider_payload),
+    )
+    monkeypatch.setattr(thought_engine, "_call_ollama_plain", lambda *args, **kwargs: ("", 1))
+
+    packet = thought_engine.generate_inner_thought_packet({
+        "event_id": "event_bad_model_response",
+        "source": "kyo_text",
+        "speaker": "Kyo",
+        "source_actor_id": "kyo",
+        "text": "Did the model answer?",
+        "addressed_to_nan0": True,
+        "timestamp": 1,
+    })
+
+    assert packet["thought_id"].startswith("thought_")
+    assert packet["private_text"] == ""
+    assert packet["suppression_reason"] == "empty_private_thought"
+
+
+def test_speech_generation_rejects_direct_event_and_router_does_not_invent_thought():
+    config = BrainConfig()
+    config.skills["nan0"]["enabled"] = True
+    skill = Nan0Skill("nan0", config, _FakeBrain())
+    direct_event = {
+        "event_id": "event_direct_to_speech",
+        "source": "kyo_text",
+        "speaker": "Kyo",
+        "text": "Speak directly from this event.",
+    }
+
+    with pytest.raises(RuntimeError, match="missing thought_id"):
+        asyncio.run(skill._generate_line(direct_event))
+
+    decision = route_thought(direct_event)
+    assert decision["decision"] == "suppress"
+    assert decision["reason"] == "missing_thought_origin"
+    assert decision["thought_id"] is None
+    assert not decision.get("line")

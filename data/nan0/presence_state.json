@@ -1,6 +1,6 @@
 {
-  "timestamp": 1781829644.1154306,
-  "pressure": 2.555,
+  "timestamp": 1781885209.6983511,
+  "pressure": 1.355,
   "presence_mode": "with_kyo",
   "emotional_mode": "muttering",
   "last_seen_summary": "the screen is quiet",
@@ -14,16 +14,25 @@
     "semantic_confidence": 0.45
   },
   "last_spoken_at": 0.0,
-  "last_kyo_heard_at": 1781829643.654246,
+  "last_kyo_heard_at": 1781885204.674965,
   "last_discord_heard_at": 0.0,
   "recent_events": [
     {
-      "time": 1781829643.66,
+      "time": 1781885129.48,
       "source": "kyo_text",
       "source_family": "kyo",
       "speaker": "Kyo",
       "source_actor_id": "kyo",
-      "text": "exitr",
+      "text": "Good morning Nan0",
+      "addressed_to_nan0": true
+    },
+    {
+      "time": 1781885204.68,
+      "source": "kyo_text",
+      "source_family": "kyo",
+      "speaker": "Kyo",
+      "source_actor_id": "kyo",
+      "text": "Good morning Nan0",
       "addressed_to_nan0": true
     }
   ],

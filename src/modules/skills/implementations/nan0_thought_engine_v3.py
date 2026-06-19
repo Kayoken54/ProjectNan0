@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.modules.llm.ollama_provider import extract_ollama_response_text
+
 try:
     import requests
 except Exception:
@@ -1098,7 +1100,7 @@ Only repair non-thought garbage. Do not make Nan0 nicer. Do not quality-police w
         prompt=prompt,
         model=model,
         timeout=timeout,
-        num_predict=110,
+        num_predict=180,
         temperature=0.88,
         system=_read_persona(),
     )
@@ -1554,6 +1556,16 @@ def _ollama_timeout_for_event(event: Dict[str, Any]) -> float:
     return float(cfg.get("live_timeout", 7))
 
 
+def _bounded_timeout(timeout: Any, lane: str) -> float:
+    """Bound adapter timeouts without allowing invalid config to abort a call."""
+    maximum = 45.0 if lane == "repair" else 30.0
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError):
+        value = 18.0
+    return max(3.0, min(value, maximum))
+
+
 def _call_ollama(
     prompt: str,
     model: str,
@@ -1570,7 +1582,7 @@ def _call_ollama(
     skill_cfg = _nan0_skill_config()
     options = {
         "num_ctx": 3072,
-        "num_predict": min(int(num_predict), 110),
+        "num_predict": min(int(num_predict), 220),
         "temperature": max(float(temperature), 0.78),
         "top_p": 0.90,
         "repeat_penalty": 1.10,
@@ -1597,8 +1609,7 @@ def _call_ollama(
     try:
         response = requests.post(_ollama_url(), json=payload, timeout=_bounded_timeout(timeout, "social"))
         response.raise_for_status()
-        body = response.json()
-        raw = str(body.get("response") or "").strip()
+        raw = extract_ollama_response_text(response.json())
         latency_ms = max(1, int((time.perf_counter() - started) * 1000))
 
         # Only the Ollama response string may contain cognition. The outer API
@@ -1652,7 +1663,7 @@ def _call_ollama_plain(
             timeout=_bounded_timeout(timeout, "repair"),
         )
         response.raise_for_status()
-        raw = (response.json().get("response") or "").strip()
+        raw = extract_ollama_response_text(response.json())
         latency_ms = max(1, int((time.perf_counter() - started) * 1000))
         return raw, latency_ms
     except Exception:
@@ -2060,7 +2071,7 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
             prompt=prompt,
             model=model,
             timeout=timeout,
-            num_predict=120,
+            num_predict=180,
             temperature=0.82,
             system=_read_persona(),
         )

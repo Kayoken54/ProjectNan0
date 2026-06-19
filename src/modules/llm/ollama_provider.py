@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import requests
 
@@ -11,6 +11,14 @@ from src.interfaces.base_interfaces import LLMInterface, STTInterface
 from src.utils.logger import get_logger
 
 logger = get_logger("bea.llm.ollama")
+
+
+def extract_ollama_response_text(payload: Any) -> str:
+    """Return model text only from a valid Ollama generate response."""
+    if not isinstance(payload, dict):
+        return ""
+    response = payload.get("response")
+    return response.strip() if isinstance(response, str) else ""
 
 
 DEFAULT_THOUGHT_PERSONA_PATH = Path("data/prompts/nan0_persona.txt")
@@ -176,7 +184,7 @@ class OllamaLLM(LLMInterface):
             "keep_alive": "2h",
             "options": {
                 "num_ctx": 3072,
-                "num_predict": min(int(num_predict), 110),
+                "num_predict": min(int(num_predict), 220 if json_hint else 110),
                 "temperature": max(float(temperature), 0.78),
                 "top_p": 0.90,
                 "repeat_penalty": 1.10,
@@ -194,7 +202,7 @@ class OllamaLLM(LLMInterface):
             call_timeout = 18.0
         response = requests.post(self.generate_url, json=payload, timeout=call_timeout)
         response.raise_for_status()
-        return response.json().get("response", "")
+        return extract_ollama_response_text(response.json())
 
     def chat(
         self,
