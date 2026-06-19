@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.modules.llm.ollama_provider import extract_ollama_response_text
+from src.modules.nan0.runtime_guard import validate_thought_packet
 
 try:
     import requests
@@ -199,26 +200,8 @@ def validate_inner_thought_packet(
     packet: Any,
     expected_source: Optional[str] = None,
 ) -> tuple[bool, str]:
-    """Validate the minimum contract required before routing a thought."""
-    if not isinstance(packet, dict):
-        return False, "missing_thought_packet"
-
-    thought_id = str(packet.get("thought_id") or "").strip()
-    if not thought_id:
-        return False, "missing_thought_id"
-    if not thought_id.startswith("thought_"):
-        return False, "invalid_thought_id"
-
-    private_text = str(packet.get("private_text") or "").strip()
-    if not private_text:
-        return False, "missing_private_text"
-
-    if expected_source is not None:
-        source = str(packet.get("source") or "").strip().lower()
-        if source != str(expected_source).strip().lower():
-            return False, "unexpected_thought_source"
-
-    return True, "valid"
+    """Validate the complete contract required before routing a thought."""
+    return validate_thought_packet(packet, expected_source=expected_source)
 
 
 THOUGHT_POOL: Dict[str, List[str]] = {}
@@ -957,6 +940,12 @@ def _is_prompt_or_anchor_debris(text: str) -> bool:
         "job:",
         "return nan0",
         "raw internal line only",
+        "private thought generator for nan0",
+        "output only the private thought text",
+        "this task does not involve speaking",
+        "required json keys",
+        "you are producing only nan0's private inner thought",
+        "nan0 private thought generator",
     )
     if any(fragment in low for fragment in prompt_fragments):
         return True

@@ -5,6 +5,7 @@ import pytest
 
 from src.core.config import BrainConfig
 from src.modules.llm import ollama_provider
+from src.modules.nan0.runtime_guard import validate_thought_packet
 from src.modules.skills.implementations import nan0_skill as nan0_skill_module
 from src.modules.skills.implementations import nan0_thought_engine_v3 as thought_engine
 from src.modules.skills.implementations.nan0_cognition_router_v1 import route_thought
@@ -41,6 +42,25 @@ def _model_payload(text):
         "suppression_reason": None,
     }
     return payload, json.dumps(payload), 7
+
+
+def _complete_thought_packet(source="kyo_text", private_text="Kyo touched the room. I noticed."):
+    return {
+        "thought_id": "thought_invariant_1",
+        "event_id": "event_invariant_1",
+        "source": source,
+        "target_actor_id": "kyo" if source == "kyo_text" else "nan0",
+        "thought_type": "direct_reply",
+        "private_text": private_text,
+        "mood": "suspicion",
+        "pressure": 1.0,
+        "novelty": 0.7,
+        "speakability": 0.8,
+        "relationship_charge": 0.7,
+        "ego_charge": 0.5,
+        "vision_charge": 0.0,
+        "suppression_reason": None,
+    }
 
 
 def _install_valid_inputs(monkeypatch, text):
@@ -103,9 +123,10 @@ def test_thought_http_adapter_calls_model_and_extracts_valid_response(monkeypatc
 def test_ollama_provider_extracts_only_valid_generate_response(monkeypatch):
     requests_sent = []
     responses = iter([
-        _FakeOllamaResponse({"response": "  {\"thought_text\": \"Still here.\"}  "}),
+        _FakeOllamaResponse({"prompt": "never return this", "response": "  {\"thought_text\": \"Still here.\"}  "}),
         _FakeOllamaResponse({"response": None}),
         _FakeOllamaResponse(["malformed", "transport"]),
+        _FakeOllamaResponse({"prompt": "instruction text only"}),
         _FakeOllamaResponse({"response": "spoken text"}),
     ])
 
@@ -117,6 +138,7 @@ def test_ollama_provider_extracts_only_valid_generate_response(monkeypatch):
     provider = ollama_provider.OllamaLLM(model_name="qwen2.5:3b")
 
     assert provider._generate("prompt", json_hint=True) == '{"thought_text": "Still here."}'
+    assert provider._generate("prompt", json_hint=True) == ""
     assert provider._generate("prompt", json_hint=True) == ""
     assert provider._generate("prompt", json_hint=True) == ""
     assert provider._generate("prompt", json_hint=False, num_predict=180) == "spoken text"
@@ -364,3 +386,139 @@ def test_speech_generation_rejects_direct_event_and_router_does_not_invent_thoug
     assert decision["reason"] == "missing_thought_origin"
     assert decision["thought_id"] is None
     assert not decision.get("line")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        (lambda packet: packet.update(private_text=""), "missing_private_text"),
+        (lambda packet: packet.pop("source"), "missing_source"),
+        (
+            lambda packet: packet.update(
+                pressure=0.0,
+                novelty=0.0,
+                speakability=0.0,
+                relationship_charge=0.0,
+                ego_charge=0.0,
+                vision_charge=0.0,
+            ),
+            "empty_thought_metadata",
+        ),
+    ],
+)
+def test_router_and_runtime_guard_block_incomplete_thought_shells(mutation, reason):
+    packet = _complete_thought_packet()
+    mutation(packet)
+
+    assert validate_thought_packet(packet) == (False, reason)
+    decision = route_thought(packet)
+    assert decision["decision"] == "suppress"
+    assert decision["reason"] == reason
+    assert decision["line"] == ""
+
+
+def test_prompt_instruction_text_is_rejected_as_generated_thought(monkeypatch):
+    instruction = (
+        "Private thought generator for Nan0, no JSON input or output. "
+        "Output only the private thought text without labels or narration."
+    )
+    payload = _model_payload(instruction)
+    monkeypatch.setattr(thought_engine, "_call_ollama", lambda *args, **kwargs: payload)
+    monkeypatch.setattr(thought_engine, "_call_ollama_plain", lambda *args, **kwargs: ("", 1))
+    monkeypatch.setattr(thought_engine, "_read_presence_state", lambda: {})
+    monkeypatch.setattr(thought_engine, "_read_vision_context", lambda explicit=None: {})
+    monkeypatch.setattr(thought_engine, "_query_recent_memory", lambda query, limit=4: [])
+    monkeypatch.setattr(thought_engine, "get_session_timeline_context", lambda: {})
+    monkeypatch.setattr(thought_engine, "get_conversation_continuity_context", lambda event: {})
+    monkeypatch.setattr(thought_engine, "get_relationship_memory_context", lambda actor_id: {})
+
+    packet = thought_engine.generate_inner_thought_packet({
+        "event_id": "event_instruction_echo",
+        "source": "boot",
+        "speaker": "Nan0",
+        "source_actor_id": "nan0",
+        "text": "Nan0 has just booted into the room.",
+        "thought_seed": "boot_presence",
+        "timestamp": 1,
+    })
+
+    assert packet["private_text"] == ""
+    assert packet["suppression_reason"] == "prompt_or_transcript_debris"
+    assert route_thought(packet)["decision"] == "suppress"
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        {"decision": "speak", "line_text": "No thought ID.", "mood": "muttering"},
+        {
+            "decision": "speak",
+            "thought_id": "thought_fake_shell",
+            "line_text": "No private thought origin.",
+            "mood": "muttering",
+        },
+    ],
+)
+def test_no_speech_packet_without_complete_private_thought_origin(decision):
+    config = BrainConfig()
+    config.skills["nan0"]["enabled"] = True
+    brain = _FakeBrain()
+    skill = Nan0Skill("nan0", config, brain)
+    skill.is_active = True
+
+    with pytest.raises(RuntimeError, match="Nan0 speech blocked"):
+        asyncio.run(skill._speak_decision(decision))
+
+    assert not hasattr(brain, "last_nan0_speech_packet")
+
+
+def test_kyo_identity_attribution_reaches_valid_thought_generation(monkeypatch):
+    captured = {}
+    payload = _model_payload("Kyo tested the wire. I noticed her doing it.")
+
+    def fake_call(prompt, *args, **kwargs):
+        captured["prompt"] = prompt
+        return payload
+
+    monkeypatch.setattr(thought_engine, "_call_ollama", fake_call)
+    monkeypatch.setattr(
+        thought_engine,
+        "load_identity_memory",
+        lambda: {
+            "actors": {
+                "kyo": {
+                    "display_name": "Kyo",
+                    "gender": "girl",
+                    "pronouns": ["she", "her"],
+                    "relationship": "creator_anchor",
+                }
+            },
+            "rules": {"resolve_kyo_gender": True},
+        },
+    )
+    monkeypatch.setattr(thought_engine, "_read_presence_state", lambda: {})
+    monkeypatch.setattr(thought_engine, "_read_vision_context", lambda explicit=None: {})
+    monkeypatch.setattr(thought_engine, "_query_recent_memory", lambda query, limit=4: [])
+    monkeypatch.setattr(thought_engine, "get_session_timeline_context", lambda: {})
+    monkeypatch.setattr(thought_engine, "get_conversation_continuity_context", lambda event: {})
+    monkeypatch.setattr(thought_engine, "get_relationship_memory_context", lambda actor_id: {})
+
+    packet = thought_engine.generate_inner_thought_packet({
+        "event_id": "event_kyo_identity_invariant",
+        "source": "kyo_text",
+        "speaker": "Kyo",
+        "source_actor_id": "kyo",
+        "text": "I tested the wire again.",
+        "addressed_to_nan0": True,
+        "timestamp": 1,
+    })
+
+    contract = packet["event_context"]["actor_contract"]
+    assert packet["source"] == "kyo_text"
+    assert packet["target_actor_id"] == "kyo"
+    assert contract["source_actor_id"] == "kyo"
+    assert contract["display_name"] == "Kyo"
+    assert contract["pronouns"] == ["she", "her"]
+    assert packet["relationship_context"]["actor"]["gender"] == "girl"
+    assert '"source_actor_id": "kyo"' in captured["prompt"]
+    assert '"pronouns": ["she", "her"]' in captured["prompt"]

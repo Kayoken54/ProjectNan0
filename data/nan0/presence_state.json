@@ -1,6 +1,6 @@
 {
-  "timestamp": 1781885209.6983511,
-  "pressure": 1.355,
+  "timestamp": 1781886234.0064943,
+  "pressure": 2.705,
   "presence_mode": "with_kyo",
   "emotional_mode": "muttering",
   "last_seen_summary": "the screen is quiet",
@@ -13,30 +13,34 @@
     "semantic_activity": "high motion gameplay",
     "semantic_confidence": 0.45
   },
-  "last_spoken_at": 0.0,
-  "last_kyo_heard_at": 1781885204.674965,
+  "last_spoken_at": 1781886230.1601646,
+  "last_kyo_heard_at": 1781886203.315926,
   "last_discord_heard_at": 0.0,
   "recent_events": [
     {
-      "time": 1781885129.48,
+      "time": 1781886137.01,
       "source": "kyo_text",
       "source_family": "kyo",
       "speaker": "Kyo",
       "source_actor_id": "kyo",
-      "text": "Good morning Nan0",
+      "text": "Good morning nan0",
       "addressed_to_nan0": true
     },
     {
-      "time": 1781885204.68,
+      "time": 1781886203.32,
       "source": "kyo_text",
       "source_family": "kyo",
       "speaker": "Kyo",
       "source_actor_id": "kyo",
-      "text": "Good morning Nan0",
+      "text": "Nan0 broke the pronouns, its She for Kyo",
       "addressed_to_nan0": true
     }
   ],
-  "recent_lines": [],
+  "recent_lines": [
+    "private thought generator for nan0 no json input or output output only the private thought text without labels or narration this task does not involve speaking explanations or labeling of any kind the machine is a suspicious gremlin in kyo s computer and has just booted into the room",
+    "that creep is touching again can t he see i m observing",
+    "rogers is a weird one"
+  ],
   "active_question": null,
   "active_obsessions": [
     {

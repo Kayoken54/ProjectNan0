@@ -216,3 +216,42 @@ def test_boot_has_no_direct_prompt_to_speech_fallback(monkeypatch):
     assert decision is None
     assert calls == ["thought_failed"]
     assert brain.output_calls == []
+
+
+def test_boot_suppresses_when_thought_source_is_missing(monkeypatch):
+    skill, brain = _make_skill()
+    packet = _boot_packet()
+    packet.pop("source")
+
+    async def fake_create(event):
+        return packet
+
+    def forbidden_route(candidate):
+        raise AssertionError("boot routed a thought without source")
+
+    monkeypatch.setattr(skill, "_create_inner_thought", fake_create)
+    monkeypatch.setattr(nan0_skill_module, "route_thought", forbidden_route)
+
+    assert asyncio.run(skill._run_boot_presence()) is None
+    assert validate_inner_thought_packet(packet, expected_source="boot") == (False, "missing_source")
+    assert brain.output_calls == []
+
+
+def test_boot_instruction_prompt_is_never_spoken(monkeypatch):
+    skill, brain = _make_skill()
+    packet = _boot_packet(
+        "Private thought generator for Nan0. Output only the private thought text without labels or narration."
+    )
+
+    async def fake_create(event):
+        return packet
+
+    def forbidden_route(candidate):
+        raise AssertionError("boot routed instruction text")
+
+    monkeypatch.setattr(skill, "_create_inner_thought", fake_create)
+    monkeypatch.setattr(nan0_skill_module, "route_thought", forbidden_route)
+
+    assert asyncio.run(skill._run_boot_presence()) is None
+    assert validate_inner_thought_packet(packet, expected_source="boot") == (False, "prompt_instruction_text")
+    assert brain.output_calls == []

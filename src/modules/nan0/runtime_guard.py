@@ -6,15 +6,88 @@ Purpose:
 - Keep Nan0 responsive during game sessions.
 - Never let deep vision or background tasks block the live lane.
 - Track service health without crashing the runtime.
-- Provide simple degraded-state lines when local inference stalls.
+- Enforce the private-thought invariant before speech.
 """
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
+
+THOUGHT_NUMERIC_METADATA = (
+    "pressure",
+    "novelty",
+    "speakability",
+    "relationship_charge",
+    "ego_charge",
+    "vision_charge",
+)
+
+INSTRUCTION_TEXT_MARKERS = (
+    "private thought generator for nan0",
+    "output only the private thought text",
+    "this task does not involve speaking",
+    "return one json object only",
+    "required json keys",
+    "you are producing only nan0's private inner thought",
+    "nan0 private thought generator",
+    "runtime material:",
+    "output shape:",
+    "do not begin with nan0:",
+    "no json. no labels",
+)
+
+
+def validate_thought_packet(
+    packet: Any,
+    expected_source: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Validate the complete thought origin required to authorize speech."""
+    if not isinstance(packet, dict):
+        return False, "missing_thought_packet"
+
+    thought_id = str(packet.get("thought_id") or "").strip()
+    if not thought_id:
+        return False, "missing_thought_id"
+    if not thought_id.startswith("thought_"):
+        return False, "invalid_thought_id"
+
+    source = str(packet.get("source") or "").strip()
+    if not source:
+        return False, "missing_source"
+    if expected_source is not None and source.lower() != str(expected_source).strip().lower():
+        return False, "unexpected_thought_source"
+
+    private_text = str(packet.get("private_text") or "").strip()
+    if not private_text:
+        return False, "missing_private_text"
+    private_low = private_text.lower()
+    if any(marker in private_low for marker in INSTRUCTION_TEXT_MARKERS):
+        return False, "prompt_instruction_text"
+
+    if not str(packet.get("thought_type") or "").strip() or not str(packet.get("mood") or "").strip():
+        return False, "missing_thought_metadata"
+
+    numeric_values = []
+    for key in THOUGHT_NUMERIC_METADATA:
+        if key not in packet:
+            return False, "missing_thought_metadata"
+        try:
+            value = float(packet[key])
+        except (TypeError, ValueError):
+            return False, "invalid_thought_metadata"
+        if not math.isfinite(value):
+            return False, "invalid_thought_metadata"
+        numeric_values.append(value)
+
+    if not any(abs(value) > 0.0 for value in numeric_values):
+        return False, "empty_thought_metadata"
+
+    return True, "valid"
 
 
 @dataclass
@@ -104,15 +177,16 @@ class RuntimeGuard:
             cooldown = 240
         return (now - self.state.last_deep_vision_at) >= cooldown
 
+    def validate_thought_packet(
+        self,
+        packet: Any,
+        expected_source: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        return validate_thought_packet(packet, expected_source=expected_source)
+
     def degraded_line(self, context: str = "") -> str:
-        """In-character line when the local brain stalls. Short by design."""
-        if self.state.live_timeout_count >= 3:
-            return "My local brain is choking. I am still here, unfortunately for the hardware."
-        if self.state.deep_timeout_count >= 2:
-            return "My deep eye is being dramatic. I can still watch the room twitch."
-        if context:
-            return f"I caught the glitch. {context} is not getting away with that."
-        return "Tiny brain spark failed. Still alive. Annoying, but alive."
+        """Runtime failures cannot synthesize speech outside cognition."""
+        return ""
 
 
 _guard: Optional[RuntimeGuard] = None

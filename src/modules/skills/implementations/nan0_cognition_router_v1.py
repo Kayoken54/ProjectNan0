@@ -12,6 +12,8 @@ try:
 except Exception:
     requests = None
 
+from src.modules.nan0.runtime_guard import validate_thought_packet
+
 
 CONFIG_PATH = Path("config.json")
 STATE_PATH = Path("data/nan0_cognition_router_state.json")
@@ -213,13 +215,28 @@ def _suppress_missing_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _suppress_invalid_thought(packet: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    thought_id = str(packet.get("thought_id") or "").strip() or None
+    return {
+        "route": "suppress",
+        "seed": str(packet.get("thought_seed") or packet.get("seed") or reason),
+        "model": "",
+        "used_llm": False,
+        "line": "",
+        "decision": "suppress",
+        "reason": reason,
+        "thought_id": thought_id,
+        "source_thought_id": thought_id,
+    }
+
+
 def validate_thought_origin(packet: Dict[str, Any]) -> None:
     if not isinstance(packet, dict):
         raise TypeError("route_thought requires an InnerThoughtPacket dict")
 
-    thought_id = _get_thought_id(packet)
-    if not thought_id:
-        raise AssertionError("missing_thought_origin")
+    valid, reason = validate_thought_packet(packet)
+    if not valid:
+        raise AssertionError("missing_thought_origin" if reason in {"missing_thought_id", "invalid_thought_id"} else reason)
 
 
 def _source_family_for_packet(packet: Dict[str, Any]) -> str:
@@ -324,7 +341,7 @@ def _fallback(seed: str, recent: list[str]) -> str:
 
 
 def _build_route_prompt(route: str, packet: Dict[str, Any]) -> str:
-    private_text = packet.get("private_text") or packet.get("thought_text") or ""
+    private_text = packet.get("private_text") or ""
     mood = packet.get("mood") or "muttering"
     target = packet.get("target_actor_id") or packet.get("target_actor") or "unknown"
 
@@ -348,9 +365,13 @@ def route_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(packet, dict):
         raise TypeError("route_thought requires an InnerThoughtPacket dict")
 
-    thought_id = _get_thought_id(packet)
-    if not thought_id:
+    valid, invalid_reason = validate_thought_packet(packet)
+    if not valid and invalid_reason in {"missing_thought_id", "invalid_thought_id"}:
         return _suppress_missing_thought(packet)
+    if not valid:
+        return _suppress_invalid_thought(packet, invalid_reason)
+
+    thought_id = str(packet["thought_id"])
 
     cfg = _config()
     state = _load_json(
@@ -516,8 +537,8 @@ def route_thought(packet: Dict[str, Any]) -> Dict[str, Any]:
         "suppression_reason": None if decision == "speak" else reason,
         "raw_line": line or None,
         "final_line": line or None,
-        "voice_enabled": decision == "speak",
-        "display_enabled": decision == "speak",
+        "voice_enabled": False,
+        "display_enabled": False,
     })
     return result
 
@@ -526,9 +547,10 @@ def thought_packet_to_event(packet: Dict[str, Any], vision_state: Optional[Dict[
     if not isinstance(packet, dict):
         raise TypeError("thought_packet_to_event requires an InnerThoughtPacket dict")
 
-    thought_id = _get_thought_id(packet)
-    if not thought_id:
-        raise AssertionError("missing_thought_origin")
+    valid, invalid_reason = validate_thought_packet(packet)
+    if not valid:
+        raise AssertionError("missing_thought_origin" if invalid_reason in {"missing_thought_id", "invalid_thought_id"} else invalid_reason)
+    thought_id = str(packet["thought_id"])
 
     event: Dict[str, Any] = {}
 
@@ -539,8 +561,8 @@ def thought_packet_to_event(packet: Dict[str, Any], vision_state: Optional[Dict[
     event["thought_id"] = thought_id
     event["source_thought_id"] = thought_id
     event["source_family"] = packet.get("source_family") or ((packet.get("event_context") or {}).get("source_family"))
-    event["text"] = packet.get("private_text") or packet.get("thought_text") or event.get("text") or ""
-    event["source"] = packet.get("source") or event.get("source") or "vision"
+    event["text"] = packet["private_text"]
+    event["source"] = packet["source"]
 
     return event
 
@@ -550,8 +572,13 @@ def route_vision_state_file() -> Dict[str, Any]:
     vision = _load_json(vision_path, {})
     packet = vision.get("thought_packet") or {}
 
-    if not packet.get("thought_id"):
-        result = _suppress_missing_thought(packet)
+    valid, invalid_reason = validate_thought_packet(packet)
+    if not valid:
+        result = (
+            _suppress_missing_thought(packet)
+            if invalid_reason in {"missing_thought_id", "invalid_thought_id"}
+            else _suppress_invalid_thought(packet, invalid_reason)
+        )
         vision["router"] = result
         vision["speech_allowed"] = False
         _save_json(vision_path, vision)

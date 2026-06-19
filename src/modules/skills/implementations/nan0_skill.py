@@ -22,6 +22,7 @@ from src.modules.skills.implementations.nan0_thought_engine_v3 import (
     generate_inner_thought_packet,
     validate_inner_thought_packet,
 )
+from src.modules.nan0.runtime_guard import validate_thought_packet
 from src.utils.logger import get_logger
 from src.modules.nan0.session_timeline import record_session_event, record_speech_packet, record_thought_packet
 
@@ -47,6 +48,13 @@ MOODS = [
 
 SpeechDecision = Dict[str, Any]
 InnerThoughtPacket = Dict[str, Any]
+
+
+def _speech_block_reason(reason: str) -> str:
+    return {
+        "missing_thought_id": "missing thought_id",
+        "missing_private_text": "missing private_text",
+    }.get(str(reason), str(reason))
 
 
 class Nan0Skill(BaseSkill):
@@ -869,6 +877,11 @@ class Nan0Skill(BaseSkill):
         if not packet.get("thought_id"):
             raise RuntimeError("Thought engine returned packet without thought_id")
 
+        valid, invalid_reason = validate_thought_packet(packet)
+        if not valid:
+            packet["suppression_reason"] = packet.get("suppression_reason") or invalid_reason
+
+        self._remember_debug_thought(packet, event)
         record_thought_packet(packet)
         return packet
 
@@ -1504,13 +1517,12 @@ class Nan0Skill(BaseSkill):
         if not isinstance(thought_packet, dict):
             raise TypeError("_generate_line requires an InnerThoughtPacket dict")
 
-        thought_id = thought_packet.get("thought_id")
-        private_text = (thought_packet.get("private_text") or "").strip()
+        valid, invalid_reason = validate_thought_packet(thought_packet)
+        if not valid:
+            raise RuntimeError(f"Nan0 speech blocked: {_speech_block_reason(invalid_reason)}")
 
-        if not thought_id:
-            raise RuntimeError("Nan0 speech blocked: missing thought_id")
-        if not private_text:
-            raise RuntimeError("Nan0 speech blocked: missing private_text")
+        thought_id = str(thought_packet["thought_id"])
+        private_text = str(thought_packet["private_text"]).strip()
 
         speakability = float(thought_packet.get("speakability") or 0.0)
         if speakability < self.speakability_threshold:
@@ -1578,6 +1590,7 @@ class Nan0Skill(BaseSkill):
         return {
             "decision": "speak",
             "thought_id": thought_id,
+            "_origin_thought_packet": thought_packet,
             "created_at": time.time(),
             "reason": "private_mutter_full",
             "line_text": line,
@@ -1692,14 +1705,16 @@ class Nan0Skill(BaseSkill):
         mood: str,
         reason: str,
     ) -> SpeechDecision:
-        thought_id = thought_packet.get("thought_id")
-        if not thought_id:
-            raise RuntimeError("Nan0 speech blocked: missing thought_id")
+        valid, invalid_reason = validate_thought_packet(thought_packet)
+        if not valid:
+            raise RuntimeError(f"Nan0 speech blocked: {_speech_block_reason(invalid_reason)}")
+        thought_id = str(thought_packet["thought_id"])
 
         line = (line or "").strip()
         return {
             "decision": "speak" if line else "suppress",
             "thought_id": thought_id,
+            "_origin_thought_packet": thought_packet,
             "created_at": time.time(),
             "reason": reason,
             "line_text": line or None,
@@ -1727,6 +1742,13 @@ class Nan0Skill(BaseSkill):
             self._record_speech_debug(None, decision, debug_stage="speech_suppressed")
             return
 
+        origin_packet = decision.get("_origin_thought_packet")
+        valid, invalid_reason = validate_thought_packet(origin_packet)
+        if not valid:
+            raise RuntimeError(f"Nan0 speech blocked: {_speech_block_reason(invalid_reason)}")
+        if str(origin_packet["thought_id"]) != str(thought_id):
+            raise RuntimeError("Nan0 speech blocked: thought origin mismatch")
+
         line = decision.get("line_text")
         mood = decision.get("mood") or "normal"
 
@@ -1734,11 +1756,17 @@ class Nan0Skill(BaseSkill):
             self._record_speech_debug(None, decision, debug_stage="speech_empty")
             return
 
-        await self._speak(mood=mood, line=line, reason=reason, thought_id=thought_id)
+        await self._speak(
+            mood=mood,
+            line=line,
+            reason=reason,
+            thought_id=thought_id,
+            origin_packet=origin_packet,
+        )
         await self._mirror_discord_reply(decision, line, reason)
         spoken_decision = dict(decision)
         spoken_decision["reason"] = reason or spoken_decision.get("reason")
-        self._record_speech_debug(None, spoken_decision, debug_stage="speech_spoken")
+        self._record_speech_debug(origin_packet, spoken_decision, debug_stage="speech_spoken")
 
     async def _mirror_discord_reply(self, decision: SpeechDecision, line: str, reason: str = "unknown"):
         """[Discord Bridge] Mirror Nan0's real thought-first Discord replies to Discord text.
@@ -1760,9 +1788,21 @@ class Nan0Skill(BaseSkill):
         except Exception as exc:
             logger.warning(f"Nan0 Discord reply mirror skipped: {exc}")
 
-    async def _speak(self, mood: str, line: str, reason: str = "unknown", thought_id: Optional[str] = None):
+    async def _speak(
+        self,
+        mood: str,
+        line: str,
+        reason: str = "unknown",
+        thought_id: Optional[str] = None,
+        origin_packet: Optional[InnerThoughtPacket] = None,
+    ):
         if not thought_id:
             raise RuntimeError("Nan0 speech blocked: missing thought_id")
+        valid, invalid_reason = validate_thought_packet(origin_packet)
+        if not valid:
+            raise RuntimeError(f"Nan0 speech blocked: {_speech_block_reason(invalid_reason)}")
+        if str(origin_packet["thought_id"]) != str(thought_id):
+            raise RuntimeError("Nan0 speech blocked: thought origin mismatch")
 
         if not self.is_active and reason not in {"shutdown_summary"}:
             return
