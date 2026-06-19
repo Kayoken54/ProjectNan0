@@ -301,7 +301,8 @@ def _append_speech_debug(record: Dict[str, Any]) -> None:
         pass
 
 def _read_presence_state() -> Dict[str, Any]:
-    return load_json(PRESENCE_STATE_PATH, {})
+    data = load_json(PRESENCE_STATE_PATH, {})
+    return data if isinstance(data, dict) else {}
 
 
 def _read_vision_context(explicit: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -310,6 +311,16 @@ def _read_vision_context(explicit: Optional[Dict[str, Any]] = None) -> Dict[str,
 
     data = load_json(VISION_STACK_STATE_PATH, {})
     return data if isinstance(data, dict) else {}
+
+
+def _context_dict(value: Any) -> Dict[str, Any]:
+    """Accept provider mappings only; reject incompatible context shapes."""
+    return value if isinstance(value, dict) else {}
+
+
+def _context_list(value: Any) -> List[Any]:
+    """Accept provider lists only; reject incompatible context shapes."""
+    return value if isinstance(value, list) else []
 
 
 
@@ -336,6 +347,9 @@ def _read_enriched_continuity_context(event: Optional[Dict[str, Any]] = None) ->
         "phase_spine",
         "obsession_engine",
         "personal_canon",
+        "expectation_context",
+        "goal_context",
+        "reflex_context",
     )
     continuity: Dict[str, Any] = {}
     for key in allowed_keys:
@@ -1469,9 +1483,10 @@ def _call_ollama(
     num_predict: int = 150,
     temperature: float = 0.88,
     system: Optional[str] = None,
-) -> tuple[str, int]:
+) -> tuple[Dict[str, Any], str, int]:
+    """Call Ollama JSON mode and return (parsed, raw, latency_ms)."""
     if requests is None:
-        return "", 0
+        return {}, "", 0
 
     cfg = _router_config()
     skill_cfg = _nan0_skill_config()
@@ -1576,7 +1591,7 @@ def _call_ollama_json(
     system: Optional[str] = None,
 ) -> tuple[Dict[str, Any], str, int]:
     try:
-        raw, latency_ms = _call_ollama(
+        result = _call_ollama(
             prompt=prompt,
             model=model,
             timeout=timeout,
@@ -1585,8 +1600,39 @@ def _call_ollama_json(
             system=system,
         )
     except TypeError:
-        raw, latency_ms = _call_ollama(prompt, model, timeout, num_predict=num_predict, temperature=temperature)
-    parsed = _extract_json(raw)
+        result = _call_ollama(prompt, model, timeout, num_predict=num_predict, temperature=temperature)
+    return _normalize_ollama_json_result(result)
+
+
+def _normalize_ollama_json_result(result: Any) -> tuple[Dict[str, Any], str, int]:
+    """Normalize the model adapter result without leaking malformed transport."""
+    parsed: Dict[str, Any] = {}
+    raw = ""
+    latency_ms = 0
+
+    if isinstance(result, (tuple, list)) and len(result) == 3:
+        parsed_value, raw_value, latency_value = result
+        if isinstance(parsed_value, dict):
+            parsed = parsed_value
+        raw = str(raw_value or "").strip()
+        try:
+            latency_ms = max(0, int(latency_value or 0))
+        except (TypeError, ValueError):
+            latency_ms = 0
+    elif isinstance(result, (tuple, list)) and len(result) == 2:
+        # Compatibility for test doubles and older adapters. The live producer
+        # above now has one three-value contract on every return branch.
+        raw_value, latency_value = result
+        raw = str(raw_value or "").strip()
+        try:
+            latency_ms = max(0, int(latency_value or 0))
+        except (TypeError, ValueError):
+            latency_ms = 0
+    else:
+        return {}, "", 0
+
+    if not parsed:
+        parsed = _extract_json(raw)
     if not parsed and raw:
         parsed = {"thought_text": raw}
     return parsed, raw, latency_ms
@@ -1885,10 +1931,10 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
     if not seed and family == "vision":
         seed = str(event.get("screen_state") or "vision_reaction")
 
-    emotional_context = _read_presence_state()
-    relationship_context = _read_relationship_context(actor_id, actor_contract)
-    continuity_context = _safe_read_continuity_context(event)
-    vision = _read_vision_context(vision_context)
+    emotional_context = _context_dict(_read_presence_state())
+    relationship_context = _context_dict(_read_relationship_context(actor_id, actor_contract))
+    continuity_context = _context_dict(_safe_read_continuity_context(event))
+    vision = _context_dict(_read_vision_context(vision_context))
 
     memory_query = " ".join(
         str(x)
@@ -1902,7 +1948,7 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
         ]
         if x
     )
-    memory_context = _query_recent_memory(memory_query, limit=4)
+    memory_context = _context_list(_query_recent_memory(memory_query, limit=4))
     model = _ollama_model_for_event(event)
     timeout = _ollama_timeout_for_event(event)
     prompt = _build_json_thought_prompt(

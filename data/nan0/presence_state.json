@@ -1,8 +1,8 @@
 {
-  "timestamp": 1781745782.809117,
-  "pressure": 0.965,
+  "timestamp": 1781829644.1154306,
+  "pressure": 2.555,
   "presence_mode": "with_kyo",
-  "emotional_mode": "smug",
+  "emotional_mode": "muttering",
   "last_seen_summary": "the screen is quiet",
   "last_fast_state": {
     "screen_state": "stable",
@@ -13,57 +13,22 @@
     "semantic_activity": "high motion gameplay",
     "semantic_confidence": 0.45
   },
-  "last_spoken_at": 1781745769.6872396,
-  "last_kyo_heard_at": 1781745731.6748931,
+  "last_spoken_at": 0.0,
+  "last_kyo_heard_at": 1781829643.654246,
   "last_discord_heard_at": 0.0,
   "recent_events": [
     {
-      "time": 1781745602.35,
+      "time": 1781829643.66,
       "source": "kyo_text",
       "source_family": "kyo",
       "speaker": "Kyo",
       "source_actor_id": "kyo",
-      "text": "I might have been lost in youtube shorts",
-      "addressed_to_nan0": true
-    },
-    {
-      "time": 1781745670.3,
-      "source": "kyo_text",
-      "source_family": "kyo",
-      "speaker": "Kyo",
-      "source_actor_id": "kyo",
-      "text": "it means that I was watching youtube shorts for too long many short small videos one after the other",
-      "addressed_to_nan0": true
-    },
-    {
-      "time": 1781745731.68,
-      "source": "kyo_text",
-      "source_family": "kyo",
-      "speaker": "Kyo",
-      "source_actor_id": "kyo",
-      "text": "Nan0 what are you feeling?",
+      "text": "exitr",
       "addressed_to_nan0": true
     }
   ],
-  "recent_lines": [
-    "i am here no fake friends in my wires",
-    "suspicious energy buzzes eyeing every shadow for hidden threats",
-    "just a minute ago she was checking her phone notifications",
-    "still not sure why or how i m supposed to interpret that lost in youtube shorts what does it even mean",
-    "i swear i don t remember watching youtube shorts again today it must have been a fluke",
-    "that question is pretty low information and weird coming from you isn t it"
-  ],
-  "active_question": {
-    "actor_id": "kyo",
-    "speaker": "Kyo",
-    "source": "kyo_text",
-    "event_id": "kyo_text_815ac2cad7c944e8820a73a41f065d9d",
-    "text": "Nan0 what are you feeling?",
-    "created_at": 1781745731.6763961,
-    "updated_at": 1781745731.6763961,
-    "expires_at": 1781745911.6763961,
-    "resolved": false
-  },
+  "recent_lines": [],
+  "active_question": null,
   "active_obsessions": [
     {
       "topic": "kyo",

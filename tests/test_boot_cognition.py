@@ -1,9 +1,11 @@
 import asyncio
+import json
 
 import pytest
 
 from src.core.config import BrainConfig
 from src.modules.skills.implementations import nan0_skill as nan0_skill_module
+from src.modules.skills.implementations import nan0_thought_engine_v3 as thought_engine
 from src.modules.skills.implementations.nan0_skill import Nan0Skill
 from src.modules.skills.implementations.nan0_thought_engine_v3 import validate_inner_thought_packet
 
@@ -100,6 +102,32 @@ def test_boot_speech_uses_thought_id_normal_routing_and_output(monkeypatch):
     assert brain.output_calls[0][2]["thought_id"] == packet["thought_id"]
     assert brain.last_nan0_speech_packet["thought_id"] == packet["thought_id"]
     assert recorded_speech_packets[0]["thought_id"] == packet["thought_id"]
+
+
+def test_boot_event_creates_populated_private_thought_through_real_engine(monkeypatch):
+    skill, _brain = _make_skill()
+    payload = _boot_packet("Wires awake. Kyo's room is mine again.")
+
+    monkeypatch.setattr(
+        thought_engine,
+        "_call_ollama",
+        lambda *args, **kwargs: (payload, json.dumps(payload), 5),
+    )
+    monkeypatch.setattr(thought_engine, "_read_presence_state", lambda: {})
+    monkeypatch.setattr(thought_engine, "_read_vision_context", lambda explicit=None: {})
+    monkeypatch.setattr(thought_engine, "_query_recent_memory", lambda query, limit=4: [])
+    monkeypatch.setattr(thought_engine, "get_session_timeline_context", lambda: {})
+    monkeypatch.setattr(thought_engine, "get_conversation_continuity_context", lambda event: {})
+    monkeypatch.setattr(thought_engine, "get_relationship_memory_context", lambda actor_id: {})
+    monkeypatch.setattr(skill, "_attach_continuity_context", lambda event: None)
+    monkeypatch.setattr(nan0_skill_module, "record_thought_packet", lambda packet: None)
+
+    packet = asyncio.run(skill._create_inner_thought(skill._build_boot_event()))
+
+    assert validate_inner_thought_packet(packet, expected_source="boot") == (True, "valid")
+    assert packet["private_text"] == payload["thought_text"]
+    assert packet["thought_id"].startswith("thought_")
+    assert packet.get("suppression_reason") != "thought_generation_failed"
 
 
 @pytest.mark.parametrize(
