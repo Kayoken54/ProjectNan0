@@ -193,6 +193,32 @@ class InnerThoughtPacket:
         return data
 
 
+def validate_inner_thought_packet(
+    packet: Any,
+    expected_source: Optional[str] = None,
+) -> tuple[bool, str]:
+    """Validate the minimum contract required before routing a thought."""
+    if not isinstance(packet, dict):
+        return False, "missing_thought_packet"
+
+    thought_id = str(packet.get("thought_id") or "").strip()
+    if not thought_id:
+        return False, "missing_thought_id"
+    if not thought_id.startswith("thought_"):
+        return False, "invalid_thought_id"
+
+    private_text = str(packet.get("private_text") or "").strip()
+    if not private_text:
+        return False, "missing_private_text"
+
+    if expected_source is not None:
+        source = str(packet.get("source") or "").strip().lower()
+        if source != str(expected_source).strip().lower():
+            return False, "unexpected_thought_source"
+
+    return True, "valid"
+
+
 THOUGHT_POOL: Dict[str, List[str]] = {}
 
 

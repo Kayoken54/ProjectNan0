@@ -20,6 +20,7 @@ from src.modules.skills.implementations.nan0_cognition_router_v1 import (
 from src.modules.skills.implementations.nan0_thought_engine_v3 import (
     BANNED_VISION_FILLER,
     generate_inner_thought_packet,
+    validate_inner_thought_packet,
 )
 from src.utils.logger import get_logger
 from src.modules.nan0.session_timeline import record_session_event, record_speech_packet, record_thought_packet
@@ -173,38 +174,58 @@ class Nan0Skill(BaseSkill):
             asyncio.create_task(self._state_writer_loop()),
         ]
 
-        # Boot must obey the same thought contract as every other spoken line.
-        # If the thought engine cannot create populated private_text, boot speech is skipped.
-        try:
-            boot_event = {
-                "event_id": f"boot_{uuid.uuid4().hex}",
-                "source": "boot",
-                "speaker": "Nan0",
-                "source_actor_id": "nan0",
-                "text": "Nan0 has just booted into the room.",
-                "message": "Nan0 has just booted into the room.",
-                "thought_seed": "boot_presence",
-                "addressed_to_nan0": False,
-                "priority": "high",
-                "timestamp": time.time(),
-                "boot_context": {
-                    "rule": "Create Nan0's own private boot thought. Do not create a startup report.",
-                    "must_have_private_text": True,
-                },
-            }
-            boot_packet = await self._create_inner_thought(boot_event)
-            if not str(boot_packet.get("private_text") or "").strip():
-                logger.warning("Nan0 boot presence skipped: thought engine returned empty private_text")
-            elif boot_packet.get("suppression_reason"):
-                logger.warning(f"Nan0 boot presence skipped: {boot_packet.get('suppression_reason')}")
-            else:
-                decision = await self._generate_line(boot_packet)
-                if decision.get("decision") == "speak":
-                    await self._speak_decision(decision, reason="boot")
-        except Exception as exc:
-            logger.warning(f"Nan0 boot presence skipped: {exc}")
+        await self._run_boot_presence()
 
         logger.info("Nan0Skill started: all speech now requires a mutter origin id.")
+
+    def _build_boot_event(self) -> Dict[str, Any]:
+        """Create the boot event consumed by the normal cognition pipeline."""
+        return {
+            "event_id": f"boot_{uuid.uuid4().hex}",
+            "source": "boot",
+            "speaker": "Nan0",
+            "source_actor_id": "nan0",
+            "text": "Nan0 has just booted into the room.",
+            "message": "Nan0 has just booted into the room.",
+            "thought_seed": "boot_presence",
+            "addressed_to_nan0": False,
+            "priority": "high",
+            "timestamp": time.time(),
+            "boot_context": {
+                "rule": "Create Nan0's own private boot thought. Do not create a startup report.",
+                "must_have_private_text": True,
+            },
+        }
+
+    async def _run_boot_presence(self) -> Optional[SpeechDecision]:
+        """Run boot through thought generation, routing, and normal speech."""
+        try:
+            boot_event = self._build_boot_event()
+            boot_packet = await self._create_inner_thought(boot_event)
+            valid, invalid_reason = validate_inner_thought_packet(boot_packet, expected_source="boot")
+            if not valid:
+                logger.warning(f"Nan0 boot presence skipped: {invalid_reason}")
+                return None
+
+            thought_id = str(boot_packet["thought_id"])
+            routed = route_thought(boot_packet)
+            if routed.get("thought_id") != thought_id:
+                logger.warning("Nan0 boot presence skipped: router did not preserve thought_id")
+                return None
+            if routed.get("decision") in {"suppress", "body_only", "memory_only", "defer"}:
+                self._record_speech_debug(boot_packet, routed, debug_stage="router_suppressed")
+                return routed
+
+            decision = await self._generate_line(boot_packet)
+            if decision.get("thought_id") != thought_id:
+                logger.warning("Nan0 boot presence skipped: speech decision lost thought_id")
+                return None
+            if decision.get("decision") == "speak":
+                await self._speak_decision(decision, reason="boot")
+            return decision
+        except Exception as exc:
+            logger.warning(f"Nan0 boot presence skipped: {exc}")
+            return None
 
     async def stop(self):
         self.is_active = False
@@ -1784,7 +1805,7 @@ class Nan0Skill(BaseSkill):
                 record_speech_packet(speech_packet)
                 if hasattr(self.brain, "last_nan0_speech_packet"):
                     self.brain.last_nan0_speech_packet = speech_packet
-                await self.brain.perform_output_task(mood, line)
+                await self.brain.perform_output_task(mood, line, speech_packet=speech_packet)
             except Exception as exc:
                 logger.error(f"Nan0 output failed: {exc}")
 
