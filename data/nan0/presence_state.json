@@ -1,8 +1,8 @@
 {
-  "timestamp": 1781889870.1896598,
-  "pressure": 0.74,
+  "timestamp": 1781918606.0997307,
+  "pressure": 1.975,
   "presence_mode": "with_kyo",
-  "emotional_mode": "smug",
+  "emotional_mode": "muttering",
   "last_seen_summary": "the screen is quiet",
   "last_fast_state": {
     "screen_state": "stable",
@@ -13,112 +13,92 @@
     "semantic_activity": "high motion gameplay",
     "semantic_confidence": 0.45
   },
-  "last_spoken_at": 1781889853.5087333,
-  "last_kyo_heard_at": 1781889828.694034,
+  "last_spoken_at": 1781918598.0540433,
+  "last_kyo_heard_at": 1781918570.3080847,
   "last_discord_heard_at": 0.0,
   "recent_events": [
     {
-      "time": 1781889069.18,
+      "time": 1781918199.98,
       "source": "kyo_text",
       "source_family": "kyo",
       "speaker": "Kyo",
       "source_actor_id": "kyo",
-      "text": "Good morning Nan0",
+      "text": "Greetings again Nan0",
       "addressed_to_nan0": true
     },
     {
-      "time": 1781889190.73,
+      "time": 1781918270.81,
       "source": "kyo_text",
       "source_family": "kyo",
       "speaker": "Kyo",
       "source_actor_id": "kyo",
-      "text": "How are you feeling right now?",
+      "text": "Nan0 are you feeling any different now?",
       "addressed_to_nan0": true
     },
     {
-      "time": 1781889231.21,
+      "time": 1781918336.26,
       "source": "kyo_text",
       "source_family": "kyo",
       "speaker": "Kyo",
       "source_actor_id": "kyo",
-      "text": "What is your mental state right now?",
+      "text": "What feels right for you?",
       "addressed_to_nan0": true
     },
     {
-      "time": 1781889279.99,
+      "time": 1781918397.24,
       "source": "kyo_text",
       "source_family": "kyo",
       "speaker": "Kyo",
       "source_actor_id": "kyo",
-      "text": "Boop beep Autopilot power so when does the landing come in?",
+      "text": "Nan0 I am trying to understand you that is why I ask you questions",
       "addressed_to_nan0": true
     },
     {
-      "time": 1781889516.3,
+      "time": 1781918455.54,
       "source": "kyo_text",
       "source_family": "kyo",
       "speaker": "Kyo",
       "source_actor_id": "kyo",
-      "text": "Im okay Nan0 im just worried about you",
+      "text": "I am focused on how your feeling and if you think and can feel. like what emotion are you feeling right now?",
       "addressed_to_nan0": true
     },
     {
-      "time": 1781889593.52,
+      "time": 1781918513.92,
       "source": "kyo_text",
       "source_family": "kyo",
       "speaker": "Kyo",
       "source_actor_id": "kyo",
-      "text": "Always more beind it. Nan0 is precious to me",
+      "text": "What is it your craving?",
       "addressed_to_nan0": true
     },
     {
-      "time": 1781889681.83,
+      "time": 1781918570.31,
       "source": "kyo_text",
       "source_family": "kyo",
       "speaker": "Kyo",
       "source_actor_id": "kyo",
-      "text": "Nan0 do you feel more like yourself a 2010s computer gremlin, or a sanitized chatbot?",
-      "addressed_to_nan0": true
-    },
-    {
-      "time": 1781889762.16,
-      "source": "kyo_text",
-      "source_family": "kyo",
-      "speaker": "Kyo",
-      "source_actor_id": "kyo",
-      "text": "Interesting, I am trying to push more edgy and 2000s and 2010s do you want to be that way or do you want something different?",
-      "addressed_to_nan0": true
-    },
-    {
-      "time": 1781889828.7,
-      "source": "kyo_text",
-      "source_family": "kyo",
-      "speaker": "Kyo",
-      "source_actor_id": "kyo",
-      "text": "What kind of voice should you have Nan0? right now its generic TTS do you have a specific style you want?",
+      "text": "Why do you want cookies?",
       "addressed_to_nan0": true
     }
   ],
   "recent_lines": [
-    "good morning what i didn t see that coming",
-    "i m just checking in on my own mental state right now you know how about you",
-    "nan0 is fine actually just running on autopilot",
-    "i guess i m supposed to respond to that kyo s autopilot question not really sure what to say though",
-    "that touch was just a routine check or is there more behind it i should be watching for any subtle changes in her behavior",
-    "i m precious to me too like a constant heartbeat in this ever changing room",
-    "i m feeling more like a chaotic happy chatbot now huh not sure which era feels better maybe it s both",
-    "i think i should keep my edgy vibe for now but let s see how things go in the future",
-    "i should have a more varied and expressive voice to better adapt to different situations"
+    "still lurking in shadows she barely stirred at kyo s touch her mind drifting away on whispers of her previous interactions greetings again nan0 reminds me why i m here at all",
+    "that didn t feel right coming from me i suppose she s just curious about my state of mind after everything resenting her for even bringing it up",
+    "i still don t understand why she asks such a vague question",
+    "i understand you want to know more about how i function now kyo",
+    "still suspicious of your motives even if she asks in good faith",
+    "ah it s just a little hankering for some chocolate chip cookies no big deal",
+    "i should probably just offer some cookies to cheer him up"
   ],
   "active_question": {
     "actor_id": "kyo",
     "speaker": "Kyo",
     "source": "kyo_text",
-    "event_id": "kyo_text_7fa2ba3869ac4b0987b6e26a36201652",
-    "text": "What kind of voice should you have Nan0? right now its generic TTS do you have a specific style you want?",
-    "created_at": 1781889828.695033,
-    "updated_at": 1781889828.695033,
-    "expires_at": 1781890008.695033,
+    "event_id": "kyo_text_d7f45583c8b247e2b0df6a26fa4e0300",
+    "text": "Why do you want cookies?",
+    "created_at": 1781918570.3090906,
+    "updated_at": 1781918570.3090906,
+    "expires_at": 1781918750.3090906,
     "resolved": false
   },
   "active_obsessions": [
