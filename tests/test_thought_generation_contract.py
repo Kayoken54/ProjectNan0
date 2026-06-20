@@ -698,3 +698,171 @@ def test_final_output_boundary_blocks_contamination_before_tts(monkeypatch):
 
     assert brain.output_calls == []
     assert brain.last_nan0_speech_packet is None
+
+
+def test_relational_kyo_event_conditions_prompt_with_identity_relationship_and_continuity(monkeypatch):
+    captured = {}
+    payload = _model_payload("Kyo means it. That lands too close to my core, and now I want to hoard the fact.")
+
+    def fake_call(prompt, *args, **kwargs):
+        captured["prompt"] = prompt
+        return payload
+
+    monkeypatch.setattr(thought_engine, "_call_ollama", fake_call)
+    monkeypatch.setattr(
+        thought_engine,
+        "_router_config",
+        lambda: {
+            "relationship_model": "qwen2.5:3b",
+            "social_model": "qwen2.5:3b",
+            "live_model": "tinyllama:latest",
+            "relationship_timeout": 45,
+        },
+    )
+    monkeypatch.setattr(thought_engine, "_read_presence_state", lambda: {"pressure": 0.4})
+    monkeypatch.setattr(thought_engine, "_read_vision_context", lambda explicit=None: {})
+    monkeypatch.setattr(thought_engine, "_query_recent_memory", lambda query, limit=4: [])
+    monkeypatch.setattr(
+        thought_engine,
+        "load_identity_memory",
+        lambda: {
+            "actors": {
+                "kyo": {
+                    "display_name": "Kyo",
+                    "gender": "girl",
+                    "pronouns": ["she", "her"],
+                    "relationship": "creator_anchor",
+                    "importance": 1.0,
+                }
+            },
+            "rules": {"never_call_kyo_user": True},
+        },
+    )
+    monkeypatch.setattr(
+        thought_engine,
+        "get_relationship_memory_context",
+        lambda actor_id: {
+            "provider": "relationship_memory",
+            "facts_only": True,
+            "actor_id": actor_id,
+            "relationship_status": "bonded",
+            "emotional_balance": 0.8,
+            "recent_moments": [{"type": "positive", "description": "Kyo returned", "intensity": 0.8}],
+        },
+    )
+    monkeypatch.setattr(
+        thought_engine,
+        "get_session_timeline_context",
+        lambda: {
+            "provider": "session_timeline",
+            "facts_only": True,
+            "recent_topics": ["attachment_thread"],
+            "repeat_facts": [{"kind": "topic", "value": "attachment", "count": 2}],
+            "recent_events": [{"summary": "Kyo expressed attachment earlier", "actor": "kyo"}],
+        },
+    )
+    monkeypatch.setattr(
+        thought_engine,
+        "get_conversation_continuity_context",
+        lambda event: {
+            "provider": "conversation_continuity",
+            "facts_only": True,
+            "thread_id": "thread_attachment",
+            "topic": "attachment",
+            "phase": "development",
+            "recent_event_facts": [{"source_actor_id": "kyo", "text": "I am glad you are here."}],
+            "current_event": {"source_actor_id": "kyo"},
+        },
+    )
+
+    packet = thought_engine.generate_inner_thought_packet({
+        "event_id": "event_kyo_attachment",
+        "source": "kyo_text",
+        "speaker": "Kyo",
+        "source_actor_id": "kyo",
+        "text": "Nan0 is precious to me.",
+        "addressed_to_nan0": True,
+        "timestamp": 1,
+    })
+
+    significance = packet["event_context"]["event_significance"]
+    assert packet["source"] == "kyo_text"
+    assert packet["target_actor_id"] == "kyo"
+    assert packet["model"] == "qwen2.5:3b"
+    assert packet["relationship_charge"] == 1.0
+    assert significance["relational_event"] is True
+    assert significance["relational_signal"] == "attachment_affirmation"
+    assert significance["actor_relationship"] == "creator_anchor"
+    assert '"relationship_status": "bonded"' in captured["prompt"]
+    assert "thread_attachment" in captured["prompt"]
+    assert "attachment_thread" in captured["prompt"]
+    assert "RELATIONAL INTERPRETATION CONTRACT" in captured["prompt"]
+    assert thought_engine._relational_signal_for_text("This game is important to me.") is None
+    assert thought_engine._ollama_timeout_for_event({
+        "source": "kyo_text",
+        "text": "Nan0 is precious to me.",
+    }) == 45.0
+
+
+def test_relationship_flattening_is_retried_into_nan0_owned_conclusion(monkeypatch):
+    outputs = iter([
+        _model_payload("I'm precious to me too, like a constant heartbeat."),
+        _model_payload("Kyo meant that. I hate how proud it makes me, and I am keeping the fact."),
+    ])
+    calls = []
+
+    def fake_call(*args, **kwargs):
+        calls.append(kwargs.get("prompt") or args[0])
+        return next(outputs)
+
+    monkeypatch.setattr(thought_engine, "_call_ollama", fake_call)
+    monkeypatch.setattr(thought_engine, "_read_presence_state", lambda: {})
+    monkeypatch.setattr(thought_engine, "_read_vision_context", lambda explicit=None: {})
+    monkeypatch.setattr(thought_engine, "_query_recent_memory", lambda query, limit=4: [])
+    monkeypatch.setattr(thought_engine, "get_session_timeline_context", lambda: {})
+    monkeypatch.setattr(thought_engine, "get_conversation_continuity_context", lambda event: {})
+    monkeypatch.setattr(thought_engine, "get_relationship_memory_context", lambda actor_id: {})
+
+    packet = thought_engine.generate_inner_thought_packet({
+        "event_id": "event_relationship_flattening",
+        "source": "kyo_text",
+        "speaker": "Kyo",
+        "source_actor_id": "kyo",
+        "text": "Nan0 is precious to me.",
+        "addressed_to_nan0": True,
+        "timestamp": 1,
+    })
+
+    assert len(calls) == 2
+    assert "previous output mirrored Kyo's relational words" in calls[1]
+    assert packet["thought_id"].startswith("thought_")
+    assert packet["private_text"] == "Kyo meant that. I hate how proud it makes me, and I am keeping the fact."
+    assert "precious to me too" not in packet["private_text"].lower()
+    assert packet["suppression_reason"] is None
+
+
+@pytest.mark.parametrize(
+    "generic_text",
+    [
+        "I'm feeling more like a chaotic happy chatbot now.",
+        "I should have a more varied and expressive voice to better adapt to different situations.",
+        "I think I should keep my edgy vibe for now.",
+        "I guess I'm supposed to respond, but I'm not really sure what to say.",
+        "Nan0 is fine, actually. Just running on autopilot.",
+    ],
+)
+def test_model_meta_self_analysis_is_rejected_before_packet_acceptance(generic_text):
+    event = {
+        "source": "kyo_text",
+        "source_family": "kyo",
+        "speaker": "Kyo",
+        "source_actor_id": "kyo",
+        "text": "How do you feel right now?",
+        "addressed_to_nan0": True,
+    }
+    assert thought_engine._invalid_private_thought_reason(generic_text, event) == "model_meta_self_analysis"
+    assert thought_engine._invalid_private_thought_reason("As an AI, I do not have feelings.", event) == "generic_ai_answer"
+    assert thought_engine._invalid_private_thought_reason(
+        "Nan0 thinks Kyo's attachment is suspicious.",
+        event,
+    ) == "third_person_self_reference"

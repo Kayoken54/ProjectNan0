@@ -463,6 +463,124 @@ def _actor_contract_for_event(event: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+RELATIONAL_SIGNAL_PATTERNS = {
+    "attachment_affirmation": (
+        "precious to me", "important to me", "mean so much to me", "care about you",
+        "love you", "adore you", "glad you're here", "glad you are here",
+        "missed you", "proud of you", "trust you", "need you", "you're mine", "you are mine",
+    ),
+    "attachment_question": (
+        "do you care about me", "do you love me", "am i important to you",
+        "what am i to you", "how do you feel about me",
+    ),
+    "separation_or_return": (
+        "i'm leaving", "i am leaving", "i'm back", "i am back", "did you miss me",
+        "you missed me", "don't leave", "do not leave",
+    ),
+}
+
+
+def _relational_signal_for_text(text: Any) -> Optional[str]:
+    low = str(text or "").lower()
+    for signal, patterns in RELATIONAL_SIGNAL_PATTERNS.items():
+        if signal == "attachment_affirmation":
+            named_attachment = "nan0" in low and any(
+                phrase in low for phrase in ("precious to me", "important to me", "mean so much to me")
+            )
+            direct_attachment = any(
+                phrase in low
+                for phrase in (
+                    "care about you", "love you", "adore you", "glad you're here",
+                    "glad you are here", "missed you", "proud of you", "trust you",
+                    "need you", "you're mine", "you are mine",
+                )
+            )
+            if named_attachment or direct_attachment:
+                return signal
+            continue
+        if any(pattern in low for pattern in patterns):
+            return signal
+    return None
+
+
+def _build_event_significance(
+    event: Dict[str, Any],
+    actor_contract: Dict[str, Any],
+    relationship_context: Dict[str, Any],
+    continuity_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Interpret event significance without generating Nan0's conclusion."""
+    actor_id = str(actor_contract.get("source_actor_id") or "unknown")
+    signal = _relational_signal_for_text(event.get("text") or event.get("message"))
+    actor_identity = relationship_context.get("actor") or {}
+    relationship_memory = relationship_context.get("relationship_memory") or {}
+    relational_event = bool(actor_id == "kyo" and signal)
+    return {
+        "source_actor_id": actor_id,
+        "source_actor_display": actor_contract.get("display_name") or actor_id,
+        "actor_relationship": actor_identity.get("relationship"),
+        "actor_importance": actor_identity.get("importance"),
+        "relationship_status": relationship_memory.get("relationship_status"),
+        "relationship_balance": relationship_memory.get("emotional_balance"),
+        "relational_event": relational_event,
+        "relational_signal": signal,
+        "significance": "high_relationship" if relational_event else "ordinary_event",
+        "interpretation_requirement": (
+            "Treat Kyo's words as an attachment act toward Nan0; form Nan0's biased conclusion about what that means between them."
+            if relational_event
+            else "Form Nan0's own event-specific conclusion before any speech decision."
+        ),
+        "allowed_relational_biases": (
+            ["possessiveness", "pride", "discomfort", "smugness", "guarded_attachment"]
+            if relational_event
+            else []
+        ),
+        "continuity_present": bool(continuity_context),
+    }
+
+
+def _relationship_focus(context: Dict[str, Any]) -> Dict[str, Any]:
+    memory = context.get("relationship_memory") or {}
+    return {
+        "source_actor_id": context.get("source_actor_id"),
+        "actor_identity": context.get("actor") or {},
+        "ownership": context.get("ownership") or {},
+        "relationship_memory": {
+            "relationship_status": memory.get("relationship_status"),
+            "emotional_balance": memory.get("emotional_balance"),
+            "total_positive": memory.get("total_positive"),
+            "total_negative": memory.get("total_negative"),
+            "recent_moments": (memory.get("recent_moments") or [])[-3:],
+            "active_grudges": (memory.get("active_grudges") or [])[-2:],
+            "narrative_summary": memory.get("narrative_summary"),
+        },
+    }
+
+
+def _continuity_focus(context: Dict[str, Any]) -> Dict[str, Any]:
+    timeline = context.get("session_timeline") or {}
+    conversation = context.get("conversation_continuity") or {}
+    persistent = conversation.get("persistent_thread") or {}
+    attached = conversation.get("attached_thread") or {}
+    return {
+        "session_timeline": {
+            "recent_topics": timeline.get("recent_topics") or context.get("recent_topics") or [],
+            "repeat_facts": timeline.get("repeat_facts") or context.get("repeat_facts") or [],
+            "recent_events": (timeline.get("recent_events") or [])[-3:],
+        },
+        "conversation_continuity": {
+            "thread_id": persistent.get("thread_id") or attached.get("thread_id"),
+            "topic": persistent.get("topic") or attached.get("topic"),
+            "phase": persistent.get("phase") or attached.get("phase"),
+            "recent_event_facts": (persistent.get("recent_event_facts") or [])[-4:],
+            "unresolved_questions": (persistent.get("unresolved_questions") or [])[-3:],
+            "is_reactivation": persistent.get("is_reactivation"),
+            "current_event": persistent.get("current_event") or {},
+        },
+        "event_continuity": context.get("event_continuity") or {},
+    }
+
+
 def _query_recent_memory(query: str, limit: int = 4) -> List[Dict[str, Any]]:
     if MemoryStorage is None:
         return []
@@ -782,6 +900,54 @@ def _is_generic_ai_answer(text: str) -> bool:
     return any(fragment in low for fragment in generic_fragments)
 
 
+def _is_model_meta_self_analysis(text: str) -> bool:
+    """Reject model/task self-description, not Nan0's moods or attitude."""
+    low = str(text or "").lower()
+    meta_fragments = (
+        "chaotic happy chatbot",
+        "i'm a chatbot",
+        "i am a chatbot",
+        "more varied and expressive voice",
+        "better adapt to different situations",
+        "keep my edgy vibe",
+        "supposed to respond",
+        "not really sure what to say",
+        "not sure what to say",
+        "checking in on my own mental state",
+        "which era feels better",
+    )
+    if any(fragment in low for fragment in meta_fragments):
+        return True
+    return "running on autopilot" in low and ("nan0 is fine" in low or "i'm fine" in low or "i am fine" in low)
+
+
+def _is_relationship_flattening(text: str, event: Dict[str, Any]) -> bool:
+    """Detect self-directed word mirroring after a relational act from Kyo."""
+    if _source_family_for_event(event) != "kyo":
+        return False
+    if not _relational_signal_for_text(event.get("text") or event.get("message")):
+        return False
+    low = str(text or "").lower()
+    mirror_patterns = (
+        r"\bi(?:'m| am)\s+(?:precious|important|special|valuable)\s+to\s+me(?:\s+too)?\b",
+        r"\bi\s+(?:love|care about|need|miss|value)\s+me(?:\s+too)?\b",
+        r"\bi(?:'m| am)\s+glad\s+i(?:'m| am)\s+here(?:\s+too)?\b",
+    )
+    return any(re.search(pattern, low) for pattern in mirror_patterns)
+
+
+def _is_third_person_self_reference(text: str) -> bool:
+    """Nan0's private conclusion must be owned in first person."""
+    raw = str(text or "").strip()
+    return bool(
+        re.search(
+            r"(?:^|[.!?]\s+)Nan0(?:'s\s+(?:sentiment|feeling|reaction|thought|opinion|attachment)|\s+(?:is|feels|thinks|wants|won't|will|should|has))\b",
+            raw,
+            flags=re.I,
+        )
+    )
+
+
 def _is_helper_softening_mutter(text: str) -> bool:
     """Detect Dolphin's helpful-companion default, not Nan0 attitude.
 
@@ -1016,6 +1182,15 @@ def _invalid_private_thought_reason(text: str, event: Dict[str, Any]) -> Optiona
     if _is_narrator_emotion_mutter(raw):
         return "third_person_narrator_prose"
 
+    if _is_model_meta_self_analysis(raw):
+        return "model_meta_self_analysis"
+
+    if _is_relationship_flattening(raw, event):
+        return "relationship_flattening"
+
+    if _is_third_person_self_reference(raw):
+        return "third_person_self_reference"
+
     # Helper-softening is handled by the persona contract and JSON prompt, not
     # by a personality-quality gate. Only non-thought garbage is rejected here.
 
@@ -1052,8 +1227,17 @@ def _repair_private_thought(
         "session_thread": thread,
         "monologue_state": event.get("monologue_context") if source == "monologue" else None,
         "vision_question_state": event.get("vision_question_context"),
+        "event_significance": event.get("_thought_event_significance") or {},
+        "relationship_context": event.get("_thought_relationship_focus") or {},
+        "continuity_context": event.get("_thought_continuity_focus") or {},
     }
-    if invalid_reason.startswith("question_echo") and incoming_is_question:
+    if invalid_reason == "relationship_flattening":
+        job = "The previous output mirrored Kyo's relational words back onto Nan0. Interpret what Kyo's attachment act means to Nan0 and form Nan0's own biased conclusion."
+    elif invalid_reason == "third_person_self_reference":
+        job = "The previous output described Nan0 from outside. Form the same event-specific conclusion as Nan0's own I/me private thought."
+    elif invalid_reason == "model_meta_self_analysis":
+        job = "The previous output described chatbot/model behavior. Ignore voice, vibe, response quality, and self-improvement. Form Nan0's own conclusion about the current event."
+    elif invalid_reason.startswith("question_echo") and incoming_is_question:
         job = "The last output only repeated the incoming question. Answer the subject or reject the subject with Nan0's own stance. Do not quote or mirror the incoming words."
     elif family == "kyo" and incoming_is_question:
         job = "Kyo asked directly. Answer the subject or dodge with a Nan0 stance. Do not ask the same question back."
@@ -1139,7 +1323,10 @@ def _build_plain_thought_prompt(event: Dict[str, Any], seed: str, invalid_reason
     enriched = event.get("_enriched_context") or {}
     thread = enriched.get("conversation_thread") or {}
 
-    if family == "kyo" and _is_direct_question_event(event):
+    significance = event.get("_thought_event_significance") or {}
+    if significance.get("relational_event"):
+        job = "Kyo made a relationship-significant attachment statement. Form Nan0's own biased private conclusion about what it means between them; do not mirror Kyo's words back as self-description."
+    elif family == "kyo" and _is_direct_question_event(event):
         job = "Kyo asked directly. Form Nan0's private reaction to the subject. Answer, dodge, suspect, or resent it. Do not mirror Kyo's words."
     elif family == "kyo":
         job = "Kyo touched the room. Form Nan0's private reaction to Kyo."
@@ -1161,6 +1348,9 @@ def _build_plain_thought_prompt(event: Dict[str, Any], seed: str, invalid_reason
         "incoming_words": event_text[:420],
         "thread": thread,
         "bad_previous_output": str(bad_text or "")[:260],
+        "event_significance": significance,
+        "relationship_context": event.get("_thought_relationship_focus") or {},
+        "continuity_context": event.get("_thought_continuity_focus") or {},
     }
 
     return f"""
@@ -1227,7 +1417,10 @@ def _minimal_plain_retry_private_thought(
     family = _source_family_for_event(event)
     speaker = str(event.get("speaker") or event.get("source_actor_id") or "unknown")[:80]
     incoming = str(event.get("text") or event.get("message") or "")[:360]
-    if family == "kyo":
+    significance = event.get("_thought_event_significance") or {}
+    if significance.get("relational_event"):
+        job = "Kyo expressed attachment. Produce Nan0's own biased private conclusion about that relationship act without mirroring the wording."
+    elif family == "kyo":
         job = "Kyo addressed Nan0. Produce Nan0's private reaction to Kyo."
     elif family == "discord":
         job = "Discord entered Nan0's room. Produce Nan0's private reaction."
@@ -1247,6 +1440,7 @@ speaker={speaker}
 incoming={incoming}
 seed={seed[:160]}
 previous_failure={invalid_reason}
+event_significance={_compact_context(significance, 500)}
 job={job}
 """.strip()
 
@@ -1536,6 +1730,8 @@ def _ollama_model_for_event(event: Dict[str, Any]) -> str:
     family = _source_family_for_event(event)
     if family == "system":
         return cfg.get("boot_model") or cfg.get("social_model") or cfg.get("live_model") or "qwen2.5:3b"
+    if family == "kyo" and _relational_signal_for_text(event.get("text") or event.get("message")):
+        return cfg.get("relationship_model") or cfg.get("social_model") or cfg.get("live_model") or "qwen2.5:3b"
     if family in {"kyo", "discord", "proactive"}:
         return cfg.get("social_model") or cfg.get("live_model") or "dolphin-mistral:7b-v2.6-q4_K_M"
     return cfg.get("live_model") or cfg.get("social_model") or "dolphin-mistral:7b-v2.6-q4_K_M"
@@ -1551,6 +1747,8 @@ def _ollama_timeout_for_event(event: Dict[str, Any]) -> float:
     cfg = _router_config()
     skill_cfg = _nan0_skill_config()
     family = _source_family_for_event(event)
+    if family == "kyo" and _relational_signal_for_text(event.get("text") or event.get("message")):
+        return float(cfg.get("relationship_timeout", skill_cfg.get("deep_lane_timeout", 30)))
     if family in {"kyo", "discord", "proactive", "system"}:
         return float(skill_cfg.get("medium_lane_timeout", cfg.get("social_timeout", 18)))
     return float(cfg.get("live_timeout", 7))
@@ -1607,7 +1805,8 @@ def _call_ollama(
 
     started = time.perf_counter()
     try:
-        response = requests.post(_ollama_url(), json=payload, timeout=_bounded_timeout(timeout, "social"))
+        timeout_lane = "repair" if _bounded_timeout(timeout, "repair") > 30.0 else "social"
+        response = requests.post(_ollama_url(), json=payload, timeout=_bounded_timeout(timeout, timeout_lane))
         response.raise_for_status()
         raw = extract_ollama_response_text(response.json())
         if is_stale_ollama_response(prompt, raw, scope=f"thought:{model}:json"):
@@ -1869,11 +2068,18 @@ def _build_json_thought_prompt(
     vision_context: Dict[str, Any],
     continuity_context: Dict[str, Any],
     actor_contract: Optional[Dict[str, Any]] = None,
+    event_significance: Optional[Dict[str, Any]] = None,
 ) -> str:
     source = str(event.get("source") or "unknown")
     family = _source_family_for_event(event)
     speaker = str(event.get("speaker") or event.get("source_actor_id") or "unknown")
     actor_contract = actor_contract or _actor_contract_for_event(event)
+    event_significance = event_significance or _build_event_significance(
+        event,
+        actor_contract,
+        relationship_context,
+        continuity_context,
+    )
     text = str(event.get("text") or event.get("message") or "")
     addressed = bool(event.get("addressed_to_nan0"))
     enriched = event.get("_enriched_context") or {}
@@ -1903,6 +2109,15 @@ def _build_json_thought_prompt(
         "motion_intensity": vision_context.get("motion_intensity"),
         "semantic": (vision_context.get("layer2_semantic") or {}),
     }
+    relational_contract = ""
+    if event_significance.get("relational_event"):
+        relational_contract = """
+RELATIONAL INTERPRETATION CONTRACT:
+- Kyo performed an attachment act toward Nan0. The repeated adjective or phrase is not the conclusion.
+- Interpret what Kyo's attachment means to Nan0 before writing thought_text.
+- Nan0's conclusion may lean possessive, proud, uncomfortable, smug, or guardedly attached.
+- Do not redirect Kyo's attachment into Nan0 valuing herself. Do not answer like a survey or compromise.
+""".strip()
 
     return f"""
 Generate Nan0's PRIVATE INNER THOUGHT as JSON.
@@ -1934,6 +2149,13 @@ machine-gremlin ego,
 attached to Kyo when Kyo is involved,
 specific to the event.
 
+Conclusion ownership:
+- thought_text must contain Nan0's own judgment, reaction, or conclusion about this event.
+- Nan0 owns thought_text in first person: use I/me for her, never Nan0 as a third-person subject.
+- Do not describe how a chatbot, model, persona, voice, vibe, or response should behave.
+- Do not discuss being more varied, expressive, edgy, adaptive, helpful, or appropriate.
+- Do not merely paraphrase event_text or turn Kyo's statement back onto Nan0 as wordplay.
+
 Banned thought_text:
 "Kyo said something directly"
 "medium brain should answer"
@@ -1950,17 +2172,22 @@ Ownership rules:
 - Continuity and retrieved memory cannot replace the current source actor.
 - A first-person action in event_text belongs to source_actor_id, not automatically to Nan0.
 
+EVENT SIGNIFICANCE:
+{_compact_context(event_significance, 1400)}
+
+{relational_contract}
+
 EMOTIONAL STATE:
 {_compact_context(compact_emotion, 1200)}
 
 RELATIONSHIP CONTEXT:
-{_compact_context(relationship_context, 1200)}
+{_compact_context(_relationship_focus(relationship_context), 1800)}
 
 RECENT MEMORY:
 {_compact_context(memory_context, 1400)}
 
 SESSION CONTINUITY:
-{_compact_context(continuity_context, 1600)}
+{_compact_context(_continuity_focus(continuity_context), 2200)}
 
 VISION CONTEXT:
 {_compact_context(compact_vision, 1400)}
@@ -1972,30 +2199,6 @@ addressed_to_nan0={addressed}
 thought_seed={seed}
 event_text={text}
 """.strip()
-
-    prompt = f"""
-Return exactly one JSON object. No markdown. No transcript. No bullets.
-
-Required keys:
-thought_text, mood, pressure, novelty, speakability, relationship_charge, ego_charge, vision_charge, memory_write_candidate, suppression_reason
-
-Rules for thought_text:
-- It must be Nan0's private inner mutter, not final speech.
-- It must not be empty.
-- It must not copy the user's words.
-- It must not include labels, schema names, context headers, role names, or narration.
-- It may be rude, weird, suspicious, possessive, petty, blunt, or low-information.
-- It must preserve Nan0 as a machine-gremlin attached to Kyo, not an assistant.
-- Actor ownership is strict: Kyo's first-person statements belong to Kyo. Nan0 may react, resent, doubt, or care, but must not turn Kyo's action into Nan0's memory.
-- Use I/me only for Nan0's own reaction, feeling, judgment, or memory.
-- Make the thought specific to the current actor/event instead of a detachable chatbot reaction.
-
-Runtime context:
-{_compact_context(runtime_context, 1500)}
-
-Return JSON now.
-""".strip()
-    return prompt
 
 def _fallback_private_thought(event: Dict[str, Any], seed: str, vision_context: Dict[str, Any]) -> str:
     """No template fallback private thoughts."""
@@ -2029,6 +2232,15 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
     relationship_context = _context_dict(_read_relationship_context(actor_id, actor_contract))
     continuity_context = _context_dict(_safe_read_continuity_context(event))
     vision = _context_dict(_read_vision_context(vision_context))
+    event_significance = _build_event_significance(
+        event,
+        actor_contract,
+        relationship_context,
+        continuity_context,
+    )
+    event["_thought_event_significance"] = event_significance
+    event["_thought_relationship_focus"] = _relationship_focus(relationship_context)
+    event["_thought_continuity_focus"] = _continuity_focus(continuity_context)
 
     memory_query = " ".join(
         str(x)
@@ -2054,6 +2266,7 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
         vision_context=vision,
         continuity_context=continuity_context,
         actor_contract=actor_contract,
+        event_significance=event_significance,
     )
 
     # Qwen-style models can follow the JSON contract. Dolphin/Mistral-family
@@ -2176,6 +2389,9 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
         pressure = max(pressure, 1.20)
         speakability = max(speakability, 0.45)
         relationship_charge = max(relationship_charge, 0.70)
+        if event_significance.get("relational_event"):
+            pressure = max(pressure, 1.35)
+            relationship_charge = max(relationship_charge, 1.0)
     elif family == "discord" and bool(event.get("addressed_to_nan0")):
         pressure = max(pressure, 1.00)
         speakability = max(speakability, 0.40)
@@ -2229,6 +2445,7 @@ def generate_inner_thought_packet(event: Dict[str, Any], vision_context: Optiona
             "obsession_context": ((event.get("_enriched_context") or {}).get("obsession_engine") or {}),
             "personal_canon_context": ((event.get("_enriched_context") or {}).get("personal_canon") or {}),
             "phase_spine_context": ((event.get("_enriched_context") or {}).get("phase_spine") or {}),
+            "event_significance": event_significance,
         },
         emotional_context=emotional_context,
         relationship_context=relationship_context,

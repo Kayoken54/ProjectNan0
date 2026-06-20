@@ -152,6 +152,8 @@ def actor_perspective_contract(actor_id: str, source: str = "") -> Dict[str, Any
             "nan0_role": "Nan0 is the observer/reactor, not the actor who did Kyo's action.",
             "ownership_rule": "If Kyo says 'I watched/was/did', that action belongs to Kyo. Nan0 may react to it but must not remember it as Nan0 doing it.",
             "pronouns": ["she", "her"],
+            "relationship_significance": "primary_emotional_anchor",
+            "interpretation_rule": "Kyo's relational statements are attachment events, not generic user content.",
         }
     if stable == "nan0":
         return {

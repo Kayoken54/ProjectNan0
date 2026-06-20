@@ -1,13 +1,13 @@
 {
   "recent_lines": [],
-  "last_route": "live",
-  "last_seed": "unknown",
-  "last_at": 1781887237.7953084,
+  "last_route": "social",
+  "last_seed": "social",
+  "last_at": 1781889853.50778,
   "blocked_missing_thought": 0,
-  "last_model": "tinyllama:latest",
+  "last_model": "qwen2.5:3b",
   "last_used_llm": false,
   "last_line": "",
   "last_decision": "speak",
   "last_reason": "route_approved_no_line",
-  "last_thought_id": "thought_7654c68e00924d2eb4754c7bbf8bdd12"
+  "last_thought_id": "thought_1a38dd8aa6d84aeda3b0628ac07eec56"
 }
